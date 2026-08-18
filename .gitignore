@@ -11,3 +11,10 @@ sysmodule/source/build_id.h
 # OS / editor cruft
 .DS_Store
 Thumbs.db
+
+# Not needed to build sysmodule/source or overlay/source -- deploy/dev
+# tooling, working notes, and prototype spikes, kept locally only.
+/tools/
+/notes/
+/spike/
+/README.md
