@@ -58,12 +58,17 @@ namespace slp::rt {
         /* Read + parse the server list from SD. Returns count (0 on error). */
         int ReloadServers();
 
-        /* LDN policy: enter nifm local network mode on OpenStation. Entering
-         * local network mode disconnects the Switch's WiFi from the internet,
-         * which would kill the UDP tunnel to a REMOTE relay (e.g. tekn0.net).
-         * But it is safe for a relay on the same LAN (local link stays up).
-         * Decide automatically per case: enter local network mode iff the
-         * connected relay resolves to a private-range address. */
+        /* Whether the connected relay resolves to a private-range address.
+         *
+         * Used only as INFORMATION now (logged, and feeds the trace message
+         * in LdnControl::EnterLocalNetworkMode) -- it no longer gates
+         * whether local network mode is entered. That used to be conditional
+         * ("skip for a remote relay, since entering kills the tunnel"), but
+         * that theory was measured against a broken DNS resolver and is
+         * disproven: entering local network mode does not sever the tunnel,
+         * even against a remote relay. Local network mode is now entered
+         * unconditionally; see EnterLocalNetworkMode's own comment for the
+         * full story. */
         bool RelayOnLocalNetwork() const;
         u32 GetRelayIpForDebug() const { return m_relay_ip; }
 
@@ -88,8 +93,15 @@ namespace slp::rt {
         u32  GetRxFrames();
         u32  GetTxFrames();
 
-        /* Virtual IP this console uses on the relay subnet. Phase 1: fixed;
-         * later derived from the console MAC so multiple consoles coexist. */
+        /* Virtual IP this console uses on the relay subnet: 10.13.x.x,
+         * derived from the low two octets of the console's REAL address
+         * (from nifm), not a fixed value and not MAC-based. This is what
+         * lets multiple consoles behind one relay coexist without
+         * colliding -- every console used to present the same hardcoded
+         * 10.13.37.2, so on a shared relay the peer that transmitted last
+         * owned that address and the others were invisible to it. See the
+         * implementation for the full derivation and its fallback (nifm not
+         * yet up at boot2). */
         static void GetVirtualIp(char *out, size_t cap);
     };
 
