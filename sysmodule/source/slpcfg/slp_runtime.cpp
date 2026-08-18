@@ -246,16 +246,26 @@ namespace slp::rt {
             int type = 0;
             int n = slpClientRecv(c, buf, sizeof(buf), (int)RecvTimeoutMs, &type);
 
-            /* Relay login. A relay that requires auth sends AUTH_ME and
-             * forwards an unauthenticated peer NOTHING -- we can still send,
-             * so ignoring this looks exactly like a dead tunnel (observed on
-             * tekn0.net: open ok, keepalives fine, zero frames ever received).
-             * Answer it here and do not pass it to the tunnel. */
+            /* Return-path probe. The relay echoes a Ping (0x02) back to the
+             * sender unconditionally (see Runtime::Start()'s send-on-connect),
+             * so a reply here proves this console can receive from this relay
+             * at all -- without depending on any other peer being online. */
             if (n > 0 && type == SLP_TYPE_PING) {
                 dbg::Trace("run: PING ECHO received (%d B) -- return path from this relay WORKS", n);
                 continue;
             }
 
+            /* Relay login. A relay that requires auth sends AUTH_ME and
+             * forwards an unauthenticated peer NOTHING -- we can still send,
+             * so ignoring this looks exactly like a dead tunnel. Answer it
+             * here and do not pass it to the tunnel.
+             *
+             * tekn0.net does NOT require a login (confirmed directly), so it
+             * was never the explanation for tekn0's earlier "zero frames ever
+             * received" symptom -- that was a byte-reversed DNS resolution
+             * (see slp_client.c dns_parse_response), unrelated to this frame
+             * type. AUTH_ME support is still correct/needed for any relay
+             * that DOES require one; it's just not what tekn0 needed. */
             if (n > 0 && type == SLP_TYPE_AUTH_ME) {
                 int sent = slpClientHandleAuthMe(c, buf + 1, (size_t)n - 1);
                 dbg::Trace("run: AUTH_ME challenge -> %s",
