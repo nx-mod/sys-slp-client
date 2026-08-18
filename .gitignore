@@ -1,0 +1,13 @@
+# Build outputs
+sysmodule/build/
+sysmodule/*.elf
+sysmodule/*.nso
+sysmodule/*.nsp
+overlay/build/
+overlay/*.elf
+overlay/*.ovl
+sysmodule/source/build_id.h
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db

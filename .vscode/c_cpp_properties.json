@@ -1,0 +1,21 @@
+{
+    "version": 4,
+    "configurations": [
+        {
+            "name": "sys-slp-client (NX sysmodule)",
+            "compilerPath": "C:/devkitpro/devkitA64/bin/aarch64-none-elf-g++.exe",
+            "cStandard": "gnu17",
+            "cppStandard": "gnu++20",
+            "intelliSenseMode": "linux-gcc-arm64",
+            "defines": ["__SWITCH__"],
+            "includePath": [
+                "${workspaceFolder}/sysmodule/source",
+                "${workspaceFolder}/sysmodule/source/**",
+                "C:/devkitpro/libnx/include",
+                "C:/devkitpro/libnx/include/switch",
+                "${workspaceFolder}/../Atmosphere-libs/libstratosphere/include",
+                "${workspaceFolder}/../Atmosphere-libs/libvapours/include"
+            ]
+        }
+    ]
+}
