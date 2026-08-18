@@ -173,6 +173,7 @@ namespace ams::slp::ldn {
         void ResetStations();
         int  StationCount() const;
         int  FindFreeNodeId() const;
+        int  FindStationByIp(u32 src_ip) const;
         u32  SubnetBroadcast() const;
 
         /* Node-change diff tracking (GetNetworkInfoLatestUpdate). */

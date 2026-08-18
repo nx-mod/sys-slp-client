@@ -578,11 +578,22 @@ namespace ams::slp::ldn {
         NodeInfo node;
         std::memcpy(&node, body, sizeof(node));
 
-        if (StationCount() >= StationCountMax)
-            return;
-        int nid = FindFreeNodeId();
-        if (nid < 0)
-            return;
+        /* Re-send of an existing connection (the peer's own game retried the
+         * whole Connect handshake, most likely because our first SyncNetwork
+         * reply was slow/lost and its client timed out waiting) -- reuse the
+         * SAME station slot instead of allocating a new one. Refreshing (not
+         * ignoring) the entry and still calling UpdateNodes() below matters:
+         * the retry means the peer is still waiting for confirmation, so it
+         * needs a fresh SyncNetwork just as much as a first-time connect. */
+        int nid = FindStationByIp(src_ip);
+        const bool is_retry = nid > 0;
+        if (nid < 0) {
+            if (StationCount() >= StationCountMax)
+                return;
+            nid = FindFreeNodeId();
+            if (nid < 0)
+                return;
+        }
 
         Station &s = m_stations[nid - 1];
         s.active    = true;
@@ -597,7 +608,8 @@ namespace ams::slp::ldn {
         s.node.nodeId      = nid;
         s.node.isConnected = 1;
 
-        ::slp::dbg::Trace("ldn: station %d connected ip=%u.%u.%u.%u", nid,
+        ::slp::dbg::Trace("ldn: station %d %s ip=%u.%u.%u.%u", nid,
+                          is_retry ? "RE-CONFIRMED (retry, same slot)" : "connected",
                           (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF,
                           (src_ip >> 8) & 0xFF, src_ip & 0xFF);
         UpdateNodes();
@@ -803,6 +815,23 @@ namespace ams::slp::ldn {
     int LdnControl::FindFreeNodeId() const {
         for (int nid = 1; nid < NodeCountMax; nid++) {
             if (!m_stations[nid - 1].active)
+                return nid;
+        }
+        return -1;
+    }
+
+    /* Find an ACTIVE station already registered for this src_ip, or -1.
+     * See HandleConnect() for why this exists: without it, a peer whose
+     * Connect retries (its own SyncNetwork reply was slow/lost, so the game
+     * retried the whole handshake -- normal, expected behavior, not a peer
+     * bug) got a BRAND NEW station slot every retry. Observed on real
+     * hardware: one real peer filled all 7 station slots with itself in
+     * ~3 seconds, permanently locking the room to any other joiner and
+     * spamming that peer's own game with an ever-growing, never-stable
+     * NetworkInfo -- the likely cause of "software error occurred" on join. */
+    int LdnControl::FindStationByIp(u32 src_ip) const {
+        for (int nid = 1; nid < NodeCountMax; nid++) {
+            if (m_stations[nid - 1].active && m_stations[nid - 1].src_ip == src_ip)
                 return nid;
         }
         return -1;
