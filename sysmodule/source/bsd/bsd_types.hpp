@@ -45,22 +45,44 @@ namespace ryu_ldn::bsd {
 // =============================================================================
 
 /**
- * @brief slp virtual LAN base IP (10.13.37.0)
+ * @brief slp virtual LAN base IP (10.13.0.0)
  *
- * All proxy addresses are in the 10.13.37.0/24 subnet.
+ * All proxy addresses are in the 10.13.0.0/16 subnet.
  * This is used to detect which sockets should be proxied.
+ *
+ * WAS 10.13.37.0/24 (LAN_NETWORK_BASE 0x0A0D2500, mask 0xFFFFFF00) until
+ * 2026-08-17. That matched the era when every console used the single
+ * hardcoded virtual IP 10.13.37.2. Once the virtual IP became DERIVED
+ * per-console (Runtime::GetVirtualIp(), low two octets of the real address
+ * grafted onto 10.13.x.x -- see slp_runtime.cpp), peer addresses spread
+ * across the full /16, e.g. 10.13.227.168 or 10.13.61.168, and this /24
+ * check silently stopped recognizing them.
+ *
+ * This only bit the ONE call site with no fallback: BsdMitmService::Connect()
+ * uses IsLanAddress() as its sole promotion test, no OR-with-anything-else.
+ * Bind() and SendTo() were unaffected -- Bind() also promotes on
+ * INADDR_ANY+broadcast-signature regardless of this check, and SendTo()
+ * inherits is_proxy from Bind, so LAN browse (bind-only, never Connect())
+ * never hit this. It went unnoticed because every peer tested so far was
+ * either the fake host (hardcoded 10.13.37.100, inside .37.0/24 by luck) or
+ * went through LDN's separate addressing path, which doesn't call this
+ * function at all. Real Connect() calls to a derived peer address outside
+ * .37.x -- the NORMAL case for two real consoles on different real
+ * subnets -- would have silently fallen through to the real network instead
+ * of the tunnel. Widened to match ip_addr.hpp's VirtualNet/VirtualMask,
+ * which already used the correct /16.
  */
-constexpr uint32_t LAN_NETWORK_BASE = 0x0A0D2500;  // 10.13.37.0 in host byte order
+constexpr uint32_t LAN_NETWORK_BASE = 0x0A0D0000;  // 10.13.0.0 in host byte order
 
 /**
- * @brief slp virtual LAN mask (255.255.255.0)
+ * @brief slp virtual LAN mask (255.255.0.0)
  */
-constexpr uint32_t LAN_NETWORK_MASK = 0xFFFFFF00;
+constexpr uint32_t LAN_NETWORK_MASK = 0xFFFF0000;
 
  /**
   * @brief Check if an IP address belongs to the slp virtual LAN
   * @param ip IPv4 address in host byte order
-  * @return true if the address is in 10.13.37.0/24
+  * @return true if the address is in 10.13.0.0/16
   */
  /// @gdb{tag="BSD:ALIGN", msg="IsLanAddress: ip=0x%x", args="$x0"}
  inline bool IsLanAddress(uint32_t ip) {
