@@ -428,8 +428,16 @@ bool ProxySocketManager::RouteIncomingData(uint32_t source_ip, uint16_t source_p
     from_addr.sin_family = static_cast<uint8_t>(ryu_ldn::bsd::AddressFamily::Inet);
     from_addr.sin_port = __builtin_bswap16(source_port);
     {
-        /* LAN mode only: show the game an on-subnet peer, otherwise it
-         * discards the reply as foreign (root cause of 2618-0006). */
+        /* LAN mode only: show the game an on-subnet peer.
+         *
+         * This was written on the theory that an off-subnet reply is what
+         * caused 2618-0006. That theory is REJECTED -- the real cause was
+         * BsdMitmService::Send()/SendTo() reporting {ret, errno} in swapped
+         * slots (see notes/TODO-uncross-bsd-out-params.md). With translation
+         * disabled (lan_addr_map.cpp: TranslationEnabled = false), VirtualToGame
+         * is an identity no-op and LAN works fine off-subnet. Kept for the rare
+         * case translation is ever re-enabled; do not re-enable to chase a
+         * missing lobby. */
         uint32_t vis = source_ip;
         if (::slp::netmap::IsLanModePort(source_port))
             vis = ::slp::netmap::VirtualToGame(vis);
@@ -498,8 +506,10 @@ ProxySocket* ProxySocketManager::FindSocketByDestination(uint32_t dest_ip, uint1
         if (is_broadcast) {
             // Broadcast packet — deliver to any proxy socket on this port.
             // Every proxy socket is bound to INADDR_ANY (stored as our local
-            // IP) or an address inside 10.13.37.0/24, so a broadcast always
-            // belongs to this virtual LAN. MK8DX LAN sends the *limited*
+            // IP) or an address inside 10.13.0.0/16 (was narrower 10.13.37.0/24
+            // until bsd_types.hpp's IsLanAddress was widened 2026-08-17 to
+            // match the per-console-derived virtual IP scheme), so a broadcast
+            // always belongs to this virtual LAN. MK8DX LAN sends the *limited*
             // broadcast 255.255.255.255, which a subnet-equality check would
             // never match.
             return socket.get();
