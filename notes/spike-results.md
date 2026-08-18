@@ -39,27 +39,30 @@ reusing an inner IP after reconnect is unicast to its OLD dead socket until it
 sends a frame refreshing the entry. Observed: A->B unicast delivered on a
 fresh server, silently dropped on a server that had processed a prior run.
 
-### 4. Dynamic whitelist overlay (2026-08-14)
-Tesla overlay (L/R/X/Y buttons) allows runtime whitelist management:
-- **L/R**: Toggle whitelist entries 0/1 by title ID
-- **X**: Add current game's title ID to whitelist (MK8DX fallback)
-- **Y**: Remove current game from whitelist
-- Supports up to 16 title IDs; display shows active entries
-- Overlay toggles are memory-only; persist across reboots by editing
-  `options.conf bsd_whitelist=` line
+### 4. Dynamic whitelist overlay — REMOVED (2026-08-17)
+This section originally (2026-08-14) documented a Tesla overlay whitelist
+(L/R/X/Y buttons, `options.conf bsd_whitelist=`) for per-game bsd:u gating.
+**The whole mechanism has since been removed** — see `notes/whitelist-design.md`
+for what replaced it (a program_id-based applet-exclusion floor, no config).
+Consequence noted at the time still applies regardless: run spikes against
+fresh servers; the transport should force a map refresh (keepalive + periodic
+broadcast) and be resilient to first-frame loss (games already retransmit
+discovery).
 
-This enables per-game whitelist control without hardcoding title IDs in
-config, supporting dynamic game switching during a session.
-Consequence: run spikes against fresh servers; our transport should force a
-map refresh (keepalive + periodic broadcast) and be resilient to first-frame
-loss (games already retransmit discovery).
-
-### 4. Plugin side-channels
+### 5. Plugin side-channels
 The server's `ldn_mitm` plugin broadcasts a scan from `172.10.13.37` to
 `0.10.13.255` every 5s — LDN room-scan advertisement, not game traffic.
 Our client must ignore frames from that source IP.
 
-### 5. Debug tooling
+**Unverified as of 2026-08-17**: the actual on-console trace shows this
+broadcast arriving from `10.13.37.0`, not `172.10.13.37` — the address here
+may itself be stale/mistyped relative to the current `10.13.0.0/16` scheme.
+Investigated 2026-08-17: no evidence the client currently mishandles this
+(the broadcast is a scan REQUEST, type 0, which only triggers a reply — it
+never populates scan RESULTS, so it can't be mistaken for a joinable network).
+See `[[lan-mode-proven-state]]` in memory.
+
+### 6. Debug tooling
 `tools/dbg_slp.py <port>` prints every datagram sent/received with hex —
 useful when a test fails to tell "not received" from "received but wrong".
 

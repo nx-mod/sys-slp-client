@@ -65,8 +65,8 @@ are all UDP.)
 | Reply to src virtual IP | ✅ Send() src-IP rewrite (src 0 -> virtual) | |
 | Pia ≥ 5.28 keepalive to 127.0.0.1 | ✅ NEW: Send() drops loopback dst, returns success | faithful: never leaves console, receiver ignores |
 | Pia 5.7+ crypto challenge (real consoles) | ✅ N/A (transparent) | only laptop fake-player needs the math |
-| First bsd session may be the ONLY session | ✅ NEW: `skip_first_bsd_session` option (default 1 = MK8DX-safe) | toggle per-game via overlay/options.conf |
-| **Dynamic whitelist overlay (L/R/X/Y toggles)** | ✅ **NEW**: L/R toggle entries 0/1, X adds current game, Y removes | 16-entry max; memory-only; edit `options.conf` for persistence |
+| First bsd session may be the ONLY session | ⚠️ auto-detected dummy-skip, hardcoded (no config) — see below | not a per-game toggle anymore; see `notes/dummy-session-crash-fix-20260815.md` |
+| **Dynamic whitelist overlay (L/R/X/Y toggles)** | ❌ **REMOVED (2026-08-17)** | replaced by an applet-exclusion floor (program_id-based); see `notes/whitelist-design.md` |
 | TCP | ⛔ gated (ENETUNREACH) | no LAN game needs it; revisit only if a title proves TCP |
 | Bind to a specific non-LAN IP (e.g. 192.168.x.x) + unicast receive | ⚠️ not proxied | falls through to real stack; expected to be a real-WiFi IP. Pia/classic ports bind INADDR_ANY, so low risk |
 | Sends from non-LAN source IPs | ✅ Send() src-IP rewrite covers src==0; bound non-LAN IPs never become proxy sockets | |

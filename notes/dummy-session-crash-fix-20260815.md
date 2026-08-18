@@ -1,5 +1,21 @@
 # New-build crash root cause + fix (2026-08-15)
 
+**UPDATE (2026-08-17): the mechanism below (a single per-pid counter incremented
+by every `ShouldMitm()` call) was itself buggy and has since been replaced.** A
+SKIPPED session never constructs a `BsdMitmService`, so its increment into the
+counter was never undone in the destructor — the count leaked +1 permanently,
+and on the game's second "burst" (e.g. WiFi -> Finalize -> LAN) nothing got
+skipped: the dummy session was intercepted and the game died. That was the
+WiFi -> LAN crash (observed 2026-08-16).
+
+Current mechanism in `bsd_mitm_service.cpp` (`ShouldMitm()`): two per-pid maps,
+`g_mitm_pid_skipped` (has this burst's dummy already been skipped?) and
+`g_mitm_pid_live` (count of currently-live intercepted sessions). The
+destructor erases BOTH entries once `g_mitm_pid_live` hits zero, which
+re-arms the skip for the pid's next burst. The core insight below — MK8DX's
+first bsd:u session per burst is a dummy that crashes if intercepted — is
+still exactly right; only the bookkeeping changed.
+
 ## Symptom
 
 After deploying the whitelist-removal build (exefs.nsp 265808 B, sha 2b78f23a),

@@ -1,5 +1,25 @@
 # WiFi / Atmosphere Integration Issues (2026-08-14)
 
+**UPDATE (2026-08-17), two corrections to this note:**
+
+1. **"Root Cause: Missing NIFM Local Network Mode" below is NOT what caused
+   2618-0006.** Local-network-mode entry is real and was correctly implemented
+   (it's needed so games see a valid local network at all), but the actual
+   2618-0006 root cause — found 2026-08-17 — was `BsdMitmService::Send()`/
+   `SendTo()` reporting the bsd:u `{ret, errno}` reply in swapped slots, so
+   every successful LAN send looked like a failure to the game. See
+   `notes/TODO-uncross-bsd-out-params.md` and `notes/pia-session-layer-20260815.md`.
+
+2. **The "Game Whitelist" fix below has been removed entirely** and replaced
+   by an applet-exclusion floor + auto-detected dummy-session skip, with no
+   config file or title-ID list at all. See `notes/whitelist-design.md`
+   (marked REMOVED) and `notes/dummy-session-crash-fix-20260815.md`.
+
+The rest of this note (nifm local-network-mode implementation details, the
+`10.114.x.x` stale-comment observation) is historically accurate and the
+comment staleness it flagged has since been fixed (2026-08-17 — see
+`bsd_mitm_service.cpp`/`bsd_types.hpp`, now say `10.13.x.x` throughout).
+
 ## Black Screen After Game Exit — FIXED with Game Whitelist (2026-08-14)
 
 ### Symptom

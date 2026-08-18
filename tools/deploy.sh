@@ -15,8 +15,8 @@ SDCARD_DIR="$(cd "${PROJECT_ROOT}/../sdcard" && pwd)"
 TITLE_ID="4200000000000011"
 CONTENT_DIR="${SDCARD_DIR}/atmosphere/contents/${TITLE_ID}"
 
-SWITCH_IP="10.172.227.168"
-SWITCH_PORT="5000"
+SWITCH_IP="${SWITCH_IP:-172.17.61.168}"
+SWITCH_PORT="${SWITCH_PORT:-5000}"
 FTP_BASE="ftp://${SWITCH_IP}:${SWITCH_PORT}"
 
 # --- sdcard/ (local mirror) ---------------------------------------------

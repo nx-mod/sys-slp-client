@@ -153,3 +153,31 @@ ScanResp reaching us / our ScanResp reaching it via the relay).
 - Do not conclude "tunnel dead" from the LOCAL relay log when the test went to
   tekn0.net — tekn0 sessions never touch `10.172.227.113:11451`.
 - Do not blame the demo host for failures observed against a production server.
+
+## RESOLVED (2026-08-17): the DNS resolver built addresses byte-reversed
+
+This note's own "DNS check" section above got close — it verified the HOST-side
+resolver logic and found nothing wrong — but the actual bug was in
+`dns_parse_response()` in `sysmodule/source/slp/slp_client.c`, which packed the
+DNS A-record's RDATA (already network-byte-order) MSB-first into a `uint32_t`
+(the NUMERIC form), then wrote that into `sockaddr_in::sin_addr`, which needs
+network order. On this little-endian target that reversed the bytes: `tekn0.net`
+(192.241.238.136) was contacted at **136.238.241.192** — a different, unrelated
+host. The console transmitted into the void and never received a single packet
+back, for every DNS-named relay, every time, all along.
+
+This explains every symptom this note (and the following night's session)
+struggled with: `open ok host=tekn0.net` succeeding (DNS lookup itself worked,
+UDP has no handshake to fail), keepalives sending fine, zero inbound frames
+ever, and the empty tekn0 lobby. It affected LAN control-plane traffic too, not
+just LDN — the bug was at the relay-socket layer, below both.
+
+Literal IP addresses (like `10.172.227.113` above) were never affected —
+`inet_aton` already returns network order — which is exactly why the local
+relay always worked and every DNS-named relay never did.
+
+Fixed by copying the RDATA bytes straight through instead of packing them:
+`memcpy(out, resp + pos + 10, 4)`. After the fix: ping echo from tekn0.net in
+~100ms, hundreds of inbound frames, and real rooms (Diablo III, Advance Wars,
+MK8DX wireless) registering on tekn0's public room list with no PC bridge. See
+`[[lan-mode-proven-state]]` in memory for the full trace.

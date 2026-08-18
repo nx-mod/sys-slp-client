@@ -39,8 +39,18 @@ its browse reply passes the game's search criteria + crypto challenge.
 - E2E over the local relay with the REAL 873B game browse: demo host replies
   1569B (1+4+1266+298); reply verifies.
 
-## TODO (needs console)
-- Re-enter MK8DX LAN Play with the demo host running; check if a room appears.
-- If a room appears and joining fails: expect a session request on 49152 (encrypted
-  with a session key derived from the session key param) and a host request/message
-  flow; that is the next layer to implement.
+## Resolved (2026-08-17)
+
+The room did NOT appear after this fix, and for an unrelated reason: MK8DX's
+LAN browse *send* was being reported to the game as a failure regardless of
+reply content, because `BsdMitmService::SendTo()` reported the bsd:u
+`{ret, errno}` reply in swapped slots — every successful send looked like
+"0 bytes sent" to the game, so it gave up with 2618-0006 before any reply
+content mattered, even with zero peers involved. Once that was fixed
+(see `notes/TODO-uncross-bsd-out-params.md`), the reply built here worked
+immediately: the LAN lobby lists and the game proceeds to a real join
+(session request on 49152, encrypted with a session key derived from the
+session key param, exactly as predicted below) — join completion needs a
+real second console since `demo_host.py` only parses the v9 header and
+cannot do session crypto for the join side. See `[[lan-mode-proven-state]]`
+in memory for the full trace.

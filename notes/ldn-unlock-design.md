@@ -1,5 +1,15 @@
 # Local-Wireless unlock: ldn:u control-plane MITM over the slp tunnel
 
+**STATUS UPDATE (2026-08-17): this is no longer just spike-proven — it is
+CONFIRMED WORKING ON HARDWARE, including against a real public relay
+(tekn0.net) with no PC bridge.** Diablo III, Advance Wars, and MK8DX wireless
+all successfully host and register on tekn0's public room list. Interop with
+real `ldn_mitm` peers (open question below) is therefore also answered:
+tekn0.net runs real `ldn_mitm` + PC-bridge users, and rooms this stack hosts
+are visible there. The design and port notes below remain accurate as
+architecture reference; treat "open questions" and "console test needed
+later" framing throughout as resolved unless a specific note says otherwise.
+
 Status: DESIGN (spike-proven). Research 2026-08-14 (switchbrew LDN_services
 wiki, ryu_ldn_nx README + sysmodule, ldn_mitm source at
 `/home/nx-mod/switch/ldn_mitm`, ryu_ldn_nx sysmodule at
