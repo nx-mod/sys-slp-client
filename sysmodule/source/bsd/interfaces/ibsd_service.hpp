@@ -214,18 +214,8 @@
 // Define the interface with a unique ID
 AMS_SF_DEFINE_INTERFACE(ams::mitm::bsd, IBsdService, AMS_RYU_BSD_IBSD_SERVICE, 0xB5D50C81)
 
-namespace ams::mitm::bsd {
-
-/**
- * @brief Check if we should intercept BSD calls for this program
- *
- * We only intercept games that might use LDN multiplayer.
- * For now, we always intercept to be safe.
- */
-inline bool ShouldInterceptBsd(const sm::MitmProcessInfo& client_info) {
-    // Always intercept for now - we'll forward non-LDN calls
-    // to the real service anyway
-    return true;
-}
-
-} // namespace ams::mitm::bsd
+/* ShouldInterceptBsd() removed 2026-08-17 -- confirmed dead code, never
+ * called from anywhere. The real gating logic is
+ * BsdMitmService::ShouldMitm() in bsd_mitm_service.cpp (relay-state,
+ * program_id floor, dummy-session skip), which this had nothing to do
+ * with. */
