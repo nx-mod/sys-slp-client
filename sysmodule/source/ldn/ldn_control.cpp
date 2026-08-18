@@ -1018,10 +1018,30 @@ namespace ams::slp::ldn {
         SendFrame(host_ip, LanPacket_Connect, reinterpret_cast<const u8 *>(&my),
                   sizeof(my));
 
-        /* ldn_mitm waits 1s for the host's SyncNetwork (which flips state to
-         * StationConnected on the run-loop thread) and returns success; games
-         * poll GetState(). */
-        ams::os::SleepThread(ams::TimeSpan::FromSeconds(1));
+        /* The Connect frame -- or the host's answering SyncNetwork -- can be
+         * dropped on the relay (UDP, no transport-level retransmission). A
+         * single blind send used to leave us stuck at Station forever while
+         * this function still reported success. Poll for StationConnected
+         * for 3s, retransmitting Connect every 500ms; HandleConnect's
+         * retry-dedup (FindStationByIp) makes repeat sends safe -- the host
+         * reuses the same station slot instead of filling the room with
+         * duplicates. Still returns success either way (matches
+         * ldn_mitm convention: games poll GetState() themselves for the
+         * real join status), but now gives the handshake a real chance to
+         * land within the window instead of one shot. */
+        for (int i = 0; i < 300; i++) {
+            {
+                std::scoped_lock lk(m_mutex);
+                if (m_state == CommState::StationConnected) {
+                    R_SUCCEED();
+                }
+            }
+            if (i % 50 == 49) {
+                SendFrame(host_ip, LanPacket_Connect,
+                          reinterpret_cast<const u8 *>(&my), sizeof(my));
+            }
+            ams::os::SleepThread(ams::TimeSpan::FromMilliSeconds(10));
+        }
         R_SUCCEED();
     }
 
