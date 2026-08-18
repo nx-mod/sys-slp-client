@@ -1,11 +1,16 @@
 /*
  * sys-slp-client — ldn:u MITM interfaces and LDN wire types.
  *
- * Phase 1: the MITM service is registered so games are unaffected (all ldn:u
- * traffic is forwarded to the real service). The interface definitions below
- * mirror the official LDN user service and are used by the MITM service.
- * The full ICommunicationService data path lands in M2.
+ * The full control-plane data path is implemented (LdnControl in
+ * ldn_control.cpp/.hpp) and confirmed working on hardware, including against
+ * a real public relay (tekn0.net) with no PC bridge -- three independent
+ * games (Diablo III, Advance Wars, MK8DX wireless) create and register rooms
+ * correctly. ldn:u traffic is only forwarded to the real service while the
+ * relay client is stopped (see LdnMitMService::ShouldMitm) or for a system
+ * applet (excluded by program_id floor) -- not as a development-stage
+ * fallback.
  *
+ * The interface definitions below mirror the official LDN user service.
  * Types are from the ldn_mitm project (Atmosphere-libs, GPL-2.0) and match
  * the real LDN IPC layout — do not reorder fields.
  */
