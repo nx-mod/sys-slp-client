@@ -1,28 +1,40 @@
 /*
- * sys-slp-client — LAN-mode address translation.
+ * sys-slp-client — LAN-mode address translation. CURRENTLY DISABLED
+ * (TranslationEnabled = false in lan_addr_map.cpp) and LAN works without it.
  *
- * THE PROBLEM
- * -----------
+ * THE ORIGINAL THEORY (since REJECTED -- kept for context, do not treat as
+ * current fact)
+ * -----------------------------------------------------------------------
  * MK8DX "LAN mode" is plain UDP broadcast. The game reads its own address from
  * the interface (nifm), NOT from the socket, so it broadcasts to its REAL
  * subnet broadcast (e.g. 10.172.227.255). Our relay peers live on the virtual
  * subnet (10.13.37.x), so the browse reply arrives stamped 10.13.37.100 --
- * off-subnet from the game's point of view, and it discards it. That is the
- * 2618-0006 failure: the reply is delivered (the trace shows
- * "RecvFrom fd=2 proxy: 1271 bytes from 0a0d2564:30000") and then ignored.
+ * off-subnet from the game's point of view. The theory was that MK8DX
+ * discarded it for exactly that reason, causing 2618-0006.
  *
- * The reference stack (ldn_mitm + switch-lan-play PC client) avoids this by
- * requiring a STATIC console IP inside 10.13.0.0/16, so game and peers share
- * one subnet. We cannot: the sysmodule needs the real interface to reach the
- * relay. MITM'ing nifm to lie about the address was attempted and abandoned --
- * MK8DX uses nn::nifm, and its CreateGeneralService request shape could not be
- * matched (handler never entered across three signature attempts).
+ * WHAT ACTUALLY CAUSED 2618-0006 (found 2026-08-17, after this file was
+ * written): `BsdMitmService::Send()`/`SendTo()` reported the bsd:u
+ * `{ret, errno}` reply in swapped slots, so every successful LAN send looked
+ * like "0 bytes sent" to the game -- it gave up before reply content could
+ * ever matter, even with zero peers involved. The off-subnet theory was never
+ * actually confirmed; see lan_addr_map.cpp's own "Considered 2026-08-17
+ * (rejected)" section for the intermediate reasoning (it correctly suspected
+ * the removed nifm MITM crash, one step short of the real answer). With
+ * translation OFF and the real bug fixed, the browse reply -- still arriving
+ * off-subnet, untranslated -- is accepted fine: the LAN lobby lists and the
+ * game proceeds to a real Pia join. Off-subnet was never the blocker.
  *
- * THE FIX
- * -------
- * Translate at the proxy instead, where we own both ends: present virtual peers
- * to the game as addresses inside the console's OWN subnet, and map back on
- * send. The game then sees an on-subnet peer and accepts the reply.
+ * The reference stack (ldn_mitm + switch-lan-play PC client) avoids the
+ * off-subnet SHAPE entirely by requiring a STATIC console IP inside
+ * 10.13.0.0/16, so game and peers share one subnet -- we cannot do that (the
+ * sysmodule needs the real interface to reach the relay), which is why this
+ * translation layer was built as a workaround for a problem that, it turns
+ * out, didn't need one.
+ *
+ * THE MECHANISM (present but inert while TranslationEnabled = false)
+ * --------------------------------------------------------------------------
+ * If ever re-enabled: present virtual peers to the game as addresses inside
+ * the console's OWN subnet, and map back on send.
  *
  *     virtual 10.13.37.H   <->  game <real-net>.H
  *     virtual 10.13.255.255 <-> game <real-broadcast>

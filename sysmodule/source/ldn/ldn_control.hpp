@@ -103,9 +103,15 @@ namespace ams::slp::ldn {
          * called when a LAN-only bsd:u session (one that never opens ldn:u,
          * so CloseAccessPoint/CloseStation/Finalize never run) ends. No-op if
          * not currently in local network mode. */
-        /* Virtual LDN address of this console, for callers outside ldn
-         * (the nifm MITM reports it to the game so LAN and LDN agree on who
-         * we are). LocalIp() itself is private. */
+        /* Virtual LDN address of this console, for callers outside ldn.
+         * LocalIp() itself is private.
+         *
+         * Used by tunnel/slp_tunnel.cpp (RefreshLocalIp/Init) to keep the bsd
+         * proxy's notion of "our address" consistent with LDN's. NOT
+         * currently also reported to games via nifm -- the nifm MITM that
+         * would do that (source/nifm/nifm_mitm_service.cpp) is dormant and
+         * unregistered; see its header comment for why and whether that
+         * still matters. */
         static u32 GetLocalIpPublic() {
             return GetInstance().LocalIp();
         }

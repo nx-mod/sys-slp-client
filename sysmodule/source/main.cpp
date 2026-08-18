@@ -407,8 +407,20 @@ namespace ams {
          *
          * We got nothing for the cost: every attempt to actually override the
          * reported address failed (the handler was never entered across three
-         * signature attempts, see nifm_mitm_service.hpp). The address problem is
-         * solved at the proxy instead -- see bsd/lan_addr_map.hpp.
+         * signature attempts). The address mismatch this was meant to fix
+         * turned out not to need fixing at all: LAN browse's broadcast
+         * delivery matches on the destination ending in .255
+         * (proxy_socket_manager.cpp), not on subnet membership, so it works
+         * regardless of what nifm tells the game about its own address.
+         * `bsd/lan_addr_map.hpp`'s translation is also currently disabled and
+         * LAN still works -- see its own comment for why.
+         *
+         * source/nifm/nifm_mitm_service.{hpp,cpp} still contain this attempt,
+         * dormant and NOT wired into any registration above -- kept as a
+         * documented possible future fix (real two-console LAN join may need
+         * a host's self-reported address to be the virtual one, untested; see
+         * the STATUS note at the top of nifm_mitm_service.hpp for the full
+         * analysis of what would need to change to make it reachable again).
          *
          * Do NOT re-register this without first reproducing a LAN-mode join and
          * confirming no new 0100152000022000 crash report appears.

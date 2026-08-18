@@ -8,7 +8,7 @@
  * ## MITM Strategy
  *
  * We intercept bsd:u to detect and proxy sockets that:
- * 1. Are bound to LDN addresses (10.114.x.x)
+ * 1. Are bound to LDN addresses (10.13.x.x)
  * 2. Connect to LDN addresses
  * 3. Send/receive data to/from LDN addresses
  *

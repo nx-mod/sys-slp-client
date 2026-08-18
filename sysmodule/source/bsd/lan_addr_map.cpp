@@ -49,7 +49,15 @@ namespace slp::netmap {
      * Translation was written for exactly that, but it only ever ran while the
      * nifm MITM was aborting MK8DX's LAN thread, so it was never given a fair
      * test -- the crash masked whatever it did. nifm is gone now, so this is
-     * the untested combination. */
+     * the untested combination.
+     *
+     * CONFIRMED (2026-08-17, after the above was written): the real cause was
+     * neither the nifm crash nor an off-subnet rejection. `Send()`/`SendTo()`
+     * reported the bsd:u {ret, errno} reply in swapped slots, so every
+     * successful LAN send looked like a failure to the game regardless of
+     * what the reply contained or where it came from. With that fixed and
+     * translation still OFF, the LAN lobby lists and the game proceeds to a
+     * real join. Off-subnet delivery was never actually the problem. */
     constexpr bool TranslationEnabled = false;
 
     bool IsTranslationEnabled() { return TranslationEnabled; }

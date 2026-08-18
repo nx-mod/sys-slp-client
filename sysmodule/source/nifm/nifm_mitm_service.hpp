@@ -27,6 +27,52 @@
  * so the system, home menu and our own relay socket (nifm:a, admin) keep seeing
  * the real address.
  *
+ * STATUS (2026-08-17): dormant, not registered anywhere, and NOT simply
+ * "flip a switch to activate."
+ *
+ * This file defines TWO separate intercepts that are easy to conflate:
+ *
+ *   - IStaticService (nifm:u itself, cmd 4/5 CreateGeneralService/Old) -- this
+ *     is the one that actually crashed the game, three signature attempts,
+ *     handler entry never once observed. It is now declared with only an
+ *     unused stub command (65000) so undeclared cmd 4/5 auto-forward to the
+ *     real service untouched. Safe as-is; matches main.cpp's "REMOVED" story.
+ *
+ *   - IGeneralService (NifmGeneralService, cmd 12/15 -- the actual address
+ *     override) -- a DIFFERENT, separately-scoped intercept. Its own object is
+ *     only ever handed to a game as the RETURN VALUE of CreateGeneralService
+ *     (Old). Since that command is exactly the one left undeclared above, it
+ *     auto-forwards to the REAL server and the game gets the REAL, unwrapped
+ *     IGeneralService handle -- our NifmGeneralService is therefore never
+ *     constructed, never invoked, by ANY code path today. It is not "working
+ *     but unregistered"; it is unreachable as written.
+ *
+ * To make it reachable you would have to declare CreateGeneralService(Old) in
+ * the IStaticService interface above, implement it by forwarding to the real
+ * service and wrapping the RETURNED object in our own NifmGeneralService
+ * (the same CreateSharedObjectEmplaced pattern main.cpp uses for ldn:u/bsd:u)
+ * -- which means solving the exact signature problem that crashed the game
+ * three times and caused the pivot away from this approach in the first
+ * place. Nothing here yet gets you past that wall.
+ *
+ * WHY IT MIGHT STILL BE WORTH SOLVING (analyzed 2026-08-17, not yet needed):
+ * Confirmed NOT necessary for anything proven working so far. LAN browse's
+ * broadcast delivery is pattern-matched on the destination ending in .255
+ * (proxy_socket_manager.cpp), not subnet-membership-checked, so the game
+ * broadcasting to its REAL subnet's .255 while nifm reports the real address
+ * still gets delivered correctly. LDN's address consistency is solved
+ * separately and correctly by LdnControl assigning node IPs directly in
+ * 10.13.x.x -- confirmed working end-to-end on a public relay. The one place
+ * this could plausibly matter: if a REAL second console hosts a LAN room (not
+ * our fake host), its session-info may embed its own nifm-reported address as
+ * the "connect here" field for a joining peer's Pia session handshake. Without
+ * this override that field would be the host's real, tunnel-unreachable DHCP
+ * address -- the same "off-subnet, address doesn't match where routing
+ * actually happens" shape as every other address bug found tonight. This is
+ * UNTESTED (no second real console has ever run this sysmodule), so it is a
+ * plausible fix for an unconfirmed problem, not a confirmed one. Revisit
+ * specifically when real two-console LAN join needs debugging.
+ *
  * IMPLEMENTATION NOTES -- learned the hard way, do not "simplify" these away:
  *
  * 1. nifm sessions are DOMAIN sessions. libnx calls serviceAssumeDomain()

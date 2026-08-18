@@ -9,7 +9,7 @@
  *
  * Unlike the LDN MITM which replaces the entire service, the BSD MITM:
  * 1. Forwards most calls to the real bsd:u service transparently
- * 2. Tracks sockets that bind/connect to LDN addresses (10.114.x.x)
+ * 2. Tracks sockets that bind/connect to LDN addresses (10.13.x.x)
  * 3. Proxies send/recv for tracked sockets via ProxyData packets
  *
  * ## IPC Format Notes
