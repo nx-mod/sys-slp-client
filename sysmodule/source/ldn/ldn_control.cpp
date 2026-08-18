@@ -246,15 +246,21 @@ namespace ams::slp::ldn {
          * increase MTU to 1500, submit the nifm request, keep MTU elevated for
          * the whole session (restored in ExitLocalNetworkMode).
          *
-         * DANGER: actually entering local network mode disconnects the Switch
-         * from the internet. Our relay tunnel lives on the real network, so
-         * that kills the tunnel (keepalive SEND FAILED) and leaves the system
-         * in local mode with no connectivity until reboot — game hang, black
-         * screens on other apps, hard hang. This only happens when the relay
-         * is REMOTE (e.g. tekn0.net); a relay on the same LAN keeps working
-         * because local network mode only cuts internet routing, not the local
-         * link. So the decision is automatic per case: enter local network
-         * mode iff the connected relay is on a private-range address. */
+         * We now enter it UNCONDITIONALLY, matching the reference stack,
+         * regardless of whether the relay is local or remote -- see the `if
+         * (!local)` block below for the full story and its own correction.
+         *
+         * SUPERSEDED THEORY (kept so nobody re-derives it): this comment used
+         * to warn that entering local network mode against a REMOTE relay
+         * kills the tunnel (keepalive SEND FAILED, hard hang until reboot),
+         * and made entry conditional on the relay being on a private-range
+         * address. That was measured against evidence that turned out to be
+         * worthless -- see the `if (!local)` block. Directly re-measured with
+         * the actual bug fixed (nifmIsWirelessCommunicationEnabled /
+         * nifmGetInternetConnectionStatus queried right after entry, plus
+         * ping echoes and a separate sysmodule's FTP session staying alive
+         * through it): entering local network mode against a remote relay
+         * does NOT kill the tunnel. Do not reintroduce the conditional skip. */
 
         /* Re-entrancy guard: OpenAccessPoint()/OpenStation() already check
          * !m_local_network_mode before calling in, but EnterLocalNetworkModePublic()

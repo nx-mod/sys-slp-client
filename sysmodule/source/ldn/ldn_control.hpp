@@ -147,12 +147,15 @@ namespace ams::slp::ldn {
          * held by the caller (OpenAccessPoint/OpenStation, or the *Public
          * wrappers above which take it themselves for the bsd MITM caller).
          *
-         * force=true (LAN browse path): always enters, even against a remote
-         * relay -- MK8DX LAN mode requires it to init wireless.
-         * force=false (WiFi/LDN path): skips entry when the relay is remote,
-         * since entering local network mode cuts internet routing and would
-         * sever the tunnel to a non-local relay with no way to recover short
-         * of a reboot. */
+         * Both force=true (LAN browse) and force=false (WiFi/LDN, called from
+         * OpenAccessPoint/OpenStation) now enter UNCONDITIONALLY, including
+         * against a remote relay -- see the implementation's own corrected
+         * comment for why (entering does not sever the tunnel; the earlier
+         * belief that it did was measured against a broken DNS resolver).
+         * `force` no longer changes behavior here -- it only affects a trace
+         * log string ("LAN browse" vs not). Kept as a parameter rather than
+         * removed since three call sites still pass it and it documents
+         * intent even though it's not behaviorally load-bearing anymore. */
         Result EnterLocalNetworkMode(bool force);
         Result ExitLocalNetworkMode();
 
