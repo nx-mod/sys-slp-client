@@ -47,6 +47,83 @@ namespace slp::rt {
             return (int)size;
         }
 
+        /* c==37 is the whole 10.13.37.x band (9472-9727) -- the well-known
+         * default lots of lan-play users leave configured, so it's the most
+         * likely collision target of all; 0/255 are network/broadcast. */
+        bool IsReservedVirtualOctet(u32 c, u32 d) {
+            return c == 0 || c == 255 || c == 37 || d == 0 || d == 255;
+        }
+
+        /* Draw a fresh low-two-octet pair outside the reserved bands. Bounded
+         * retry loop: GenerateRandomBytes is uniform over 0-255 per octet, so
+         * the reserved fraction (~3/256 for c, ~2/256 for d) makes repeat
+         * misses extremely unlikely; the cap just guarantees termination. */
+        void GenerateVirtualOctets(u32 &c_out, u32 &d_out) {
+            for (int attempt = 0; attempt < 64; attempt++) {
+                u8 rnd[2];
+                ams::os::GenerateRandomBytes(rnd, sizeof(rnd));
+                u32 c = rnd[0], d = rnd[1];
+                if (!IsReservedVirtualOctet(c, d)) {
+                    c_out = c;
+                    d_out = d;
+                    dbg::Trace("runtime: GenerateVirtualOctets drew 10.13.%u.%u (attempt %d)",
+                               static_cast<unsigned>(c), static_cast<unsigned>(d), attempt);
+                    return;
+                }
+            }
+            /* Astronomically unlikely fallback -- still outside every reserved band. */
+            c_out = 100;
+            d_out = 100;
+            dbg::Trace("runtime: GenerateVirtualOctets exhausted retries, using fallback 10.13.100.100");
+        }
+
+        bool ReadPersistedVirtualOctets(u32 &c_out, u32 &d_out) {
+            char buf[32];
+            int size = ReadConfigText(SLPCFG_VIRTUAL_ID_PATH, buf, sizeof(buf));
+            if (size <= 0)
+                return false;
+            unsigned c = 0, d = 0;
+            if (std::sscanf(buf, "%u.%u", &c, &d) != 2)
+                return false;
+            if (c > 255 || d > 255 || IsReservedVirtualOctet(c, d))
+                return false;
+            c_out = c;
+            d_out = d;
+            return true;
+        }
+
+        void PersistVirtualOctets(u32 c, u32 d) {
+            char text[32];
+            int len = std::snprintf(text, sizeof(text), "%u.%u\n",
+                                     static_cast<unsigned>(c), static_cast<unsigned>(d));
+            if (len <= 0)
+                return;
+
+            ams::Result rc = ams::fs::DeleteFile(SLPCFG_VIRTUAL_ID_PATH);
+            AMS_UNUSED(rc);
+            rc = ams::fs::CreateFile(SLPCFG_VIRTUAL_ID_PATH, len);
+            if (R_FAILED(rc)) {
+                dbg::Trace("runtime: PersistVirtualOctets CreateFile rc=0x%08x", rc.GetValue());
+                return;
+            }
+
+            ams::fs::FileHandle file;
+            rc = ams::fs::OpenFile(std::addressof(file), SLPCFG_VIRTUAL_ID_PATH,
+                                   ams::fs::OpenMode_Write);
+            if (R_SUCCEEDED(rc)) {
+                rc = ams::fs::WriteFile(file, 0, text, static_cast<size_t>(len),
+                                        ams::fs::WriteOption::Flush);
+                ams::fs::CloseFile(file);
+            }
+            if (R_FAILED(rc)) {
+                dbg::Trace("runtime: PersistVirtualOctets write rc=0x%08x", rc.GetValue());
+            } else {
+                dbg::Trace("runtime: PersistVirtualOctets wrote 10.13.%u.%u to %s",
+                           static_cast<unsigned>(c), static_cast<unsigned>(d),
+                           SLPCFG_VIRTUAL_ID_PATH);
+            }
+        }
+
     }
 
     Runtime::Runtime()
@@ -159,54 +236,50 @@ namespace slp::rt {
     void Runtime::GetVirtualIp(char *out, size_t cap) {
         /* Derive a per-console address inside the 10.13.0.0/16 virtual subnet.
          *
-         * This used to return a hardcoded "10.13.37.2" for EVERY console. On a
-         * private relay that is invisible; on a shared one it is fatal. The
-         * relay identifies peers by source IP -- map.insert(src_ip, socket) --
-         * so two consoles running this module both claim 10.13.37.2 and
-         * whichever transmitted last owns the entry. The other keeps sending
-         * happily, is counted online, and receives NOTHING, because every reply
-         * addressed to 10.13.37.2 goes to its rival. Two instances of this
-         * module knock each other off the network.
+         * This used to return a hardcoded "10.13.37.2" for EVERY console, then
+         * (Phase 2) derived the low two octets from the console's REAL address
+         * instead. That fixed same-LAN collisions but not the shared-relay
+         * case: two strangers behind two DIFFERENT routers can easily land on
+         * the same DHCP-assigned low two octets (192.168.1.x is extremely
+         * common), so they'd still collide on the relay's peer map even though
+         * they've never been on the same network.
          *
-         * The reference stack avoids this by having the user assign each
-         * console a distinct static 10.13.x.x by hand. We do it automatically:
-         * take the low two octets of the console's REAL address (unique on its
-         * own LAN, which is the uniqueness we need) and graft them onto 10.13:
-         *
-         *     real 10.172.227.168  ->  virtual 10.13.227.168
-         *
-         * Deterministic, so it survives reboots and the relay's peer map stays
-         * stable. Avoids .0/.255 (network/broadcast) and .1 (gateway). */
-        u32 real_ip = 0, real_mask = 0, gw = 0, d1 = 0, d2 = 0;
-        const Result rc = nifmGetCurrentIpConfigInfo(&real_ip, &real_mask, &gw, &d1, &d2);
-
-        if (R_SUCCEEDED(rc) && real_ip != 0) {
-            /* nifm returns network byte order; we want the numeric form. */
-            const u32 host_order = __builtin_bswap32(real_ip);
-            u32 c = (host_order >> 8) & 0xFF;
-            u32 d =  host_order       & 0xFF;
-
-            if (d == 0 || d == 255 || d == 1)
-                d = 2 + (d % 250);          /* keep it inside .2 - .251 */
-            if (c == 255)
-                c = 37;
-
+         * Phase 3: draw the low two octets ONCE at random (avoiding the
+         * reserved bands -- see IsReservedVirtualOctet) and persist them to
+         * SLPCFG_VIRTUAL_ID_PATH, independent of the real address entirely.
+         * Random collisions are possible but require two consoles to draw the
+         * exact same pair out of ~253*254 choices, versus the old scheme's
+         * near-guaranteed collision for two strangers on similarly-configured
+         * home routers. Persisted so it's stable across reboots, same as the
+         * old scheme, and the relay's peer map still stays consistent. */
+        u32 c = 0, d = 0;
+        if (ReadPersistedVirtualOctets(c, d)) {
             std::snprintf(out, cap, "10.13.%u.%u",
                           static_cast<unsigned>(c), static_cast<unsigned>(d));
-            dbg::Trace("runtime: virtual ip %s (derived from real %u.%u.%u.%u)",
-                       out,
-                       (host_order >> 24) & 0xFF, (host_order >> 16) & 0xFF,
-                       (host_order >> 8) & 0xFF, host_order & 0xFF);
+            dbg::Trace("runtime: virtual ip %s (persisted, from %s)", out, SLPCFG_VIRTUAL_ID_PATH);
             return;
         }
 
-        /* Network not up yet (boot2 runs before DHCP). Fall back to the legacy
-         * fixed address; this is called again when a game opens ldn:u, by which
-         * time nifm answers. */
-        dbg::Trace("runtime: nifm unavailable (0x%08x) -- fallback virtual ip %s",
-                   static_cast<unsigned>(rc), DefaultVirtualIp);
-        std::strncpy(out, DefaultVirtualIp, cap - 1);
-        out[cap - 1] = '\0';
+        u32 real_ip = 0, real_mask = 0, gw = 0, d1 = 0, d2 = 0;
+        const Result rc = nifmGetCurrentIpConfigInfo(&real_ip, &real_mask, &gw, &d1, &d2);
+        if (R_FAILED(rc)) {
+            /* Network not up yet (boot2 runs before DHCP) and nothing persisted
+             * yet either -- can't safely draw+persist without fs/nifm being
+             * meaningfully up. Fall back to the legacy fixed address; this is
+             * called again when a game opens ldn:u, by which time nifm answers
+             * and we draw+persist for real. */
+            dbg::Trace("runtime: nifm unavailable (0x%08x), nothing persisted -- fallback virtual ip %s",
+                       static_cast<unsigned>(rc), DefaultVirtualIp);
+            std::strncpy(out, DefaultVirtualIp, cap - 1);
+            out[cap - 1] = '\0';
+            return;
+        }
+
+        GenerateVirtualOctets(c, d);
+        PersistVirtualOctets(c, d);
+        std::snprintf(out, cap, "10.13.%u.%u",
+                      static_cast<unsigned>(c), static_cast<unsigned>(d));
+        dbg::Trace("runtime: virtual ip %s (freshly drawn and persisted)", out);
     }
 
     void Runtime::RunLoop(void *arg) {

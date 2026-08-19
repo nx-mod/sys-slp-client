@@ -125,6 +125,20 @@ namespace ams::slp::ldn {
             return self.ExitLocalNetworkMode();
         }
 
+        /* Is `ip` (Ryujinx-format virtual address) a member of OUR current
+         * LDN session -- ourselves, or a connected node in m_network_info?
+         * Used by ProxySocketManager::RouteIncomingData to drop game-data
+         * frames from a shared relay's OTHER, unrelated sessions -- the
+         * game-data counterpart to HandleConnect's scanner-allowlist gate
+         * (that one only covers the LDN control handshake). Returns true
+         * (permissive) when we have no active session yet, since there is
+         * nothing meaningful to filter against during discovery. */
+        static bool IsKnownSessionPeerPublic(u32 ip) {
+            auto &self = GetInstance();
+            std::scoped_lock lk(self.m_mutex);
+            return self.IsKnownSessionPeer(ip);
+        }
+
     private:
         struct Station {
             bool     active;
@@ -140,6 +154,7 @@ namespace ams::slp::ldn {
         void SetState(CommState state);
         void SignalStateChange();
         u32  LocalIp() const;
+        bool IsKnownSessionPeer(u32 ip) const;
 
         /* WiFi/local network mode (nifm). Enters/leaves local network mode to
          * enable local broadcast + LDN socket creation, mirroring ldn_mitm's
@@ -202,6 +217,22 @@ namespace ams::slp::ldn {
         u64             m_scan_filter_lcid;   /* 0 = no filter */
         NetworkInfo     m_scan_results[MaxScanResults];
         u16             m_scan_result_count;
+
+        /* Host side: recent-scanner allowlist. A shared internet relay puts
+         * consoles from totally unrelated game sessions on the same wire, and
+         * the LanPacket_Connect frame carries no session/network id at all
+         * (just a bare NodeInfo) -- so HandleConnect on its own can't tell a
+         * real joiner of OUR session from a stray Connect off some other
+         * session's traffic. A legitimate joiner always Scans us first (and
+         * gets our ScanResp) before it Connects, so we gate Connect on the
+         * source IP having scanned us recently. Doesn't require any wire
+         * format change on either side. */
+        static constexpr size_t MaxRecentScanners = 16;
+        static constexpr s64    ScannerTimeoutTicks = 19200000 * 30; /* ~30s @ 19.2MHz */
+        struct ScannerEntry { u32 ip; s64 last_tick; bool used; };
+        ScannerEntry    m_recent_scanners[MaxRecentScanners];
+        void RecordScanner(u32 src_ip);
+        bool WasRecentScanner(u32 src_ip);
 
         /* GetNetworkInfoLatestUpdate diff tracking. */
         bool                    m_prev_node_connected[NodeCountMax];

@@ -44,8 +44,17 @@ namespace ams::mitm::nifm {
             return false;
 
         /* Applications only -- the system, home menu and background services
-         * must keep seeing the console's real address. */
-        if (client_info.program_id.value < 0x0100000000000000ULL)
+         * must keep seeing the console's real address.
+         *
+         * Was a hand-rolled bound of 0x0100000000000000, which is the start
+         * of FIRMWARE SYSMODULES, not applications (see the range breakdown
+         * in bsd_mitm_service.cpp's ShouldMitm) -- one tier too loose, so
+         * this would have MITM'd firmware sysmodules and system applets
+         * (qlaunch, Album) too, the exact false-positive class the
+         * application-floor check exists to prevent. Also had no upper
+         * bound. ams::ncm::IsApplicationId is the correct, complete check
+         * (same fix already applied to BsdMitmService/LdnMitMService). */
+        if (!ams::ncm::IsApplicationId(client_info.program_id))
             return false;
 
         ::slp::dbg::Trace("nifm: MITM application 0x%016lx",

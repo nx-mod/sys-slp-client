@@ -17,6 +17,19 @@ namespace ams::slp::ldn {
 
     class LdnICommunicationService {
     public:
+        /* If the game force-closes or crashes instead of calling
+         * Finalize()/CloseAccessPoint()/DestroyNetwork() itself, this
+         * session object is still destroyed when its IPC session dies --
+         * but nothing was forcing LdnControl's singleton state back to
+         * None, so a hosted network stayed in AccessPointCreated (still
+         * answering Scan, still visible on the relay) forever, well past
+         * when the game that created it was gone. Confirmed on hardware:
+         * closed the game, but the console kept replying to scans and
+         * sending keepalives indefinitely. Mirrors BsdMitmService's
+         * destructor-cleanup pattern (bsd_mitm_service.cpp), which LDN
+         * never got an equivalent of. */
+        ~LdnICommunicationService();
+
         Result Initialize(const ams::sf::ClientProcessId &client_process_id);
         Result InitializeSystem2(u64 unk, const ams::sf::ClientProcessId &client_process_id);
         Result Finalize();

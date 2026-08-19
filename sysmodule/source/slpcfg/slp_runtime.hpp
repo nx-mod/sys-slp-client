@@ -20,6 +20,11 @@
 
 #define SLPCFG_SERVICE_NAME "slp:cfg"
 #define SLPCFG_CONFIG_PATH  "sdmc:/config/slp-helper/servers.conf"
+/* Persisted virtual-id (see Runtime::GetVirtualIp): "<c>.<d>\n" -- the two
+ * low octets of our fixed 10.13.<c>.<d> address, drawn once at random and
+ * kept forever so it survives reboots and never collides with a stranger who
+ * happens to share our real IP's low octets on a different network. */
+#define SLPCFG_VIRTUAL_ID_PATH "sdmc:/config/slp-helper/virtual_id.cfg"
 
 #define SLPCFG_STATE_STOPPED 0
 #define SLPCFG_STATE_RUNNING 1

@@ -185,6 +185,7 @@ namespace ams::slp::ldn {
         std::memset(m_self_name, 0, sizeof(m_self_name));
         std::memset(m_advertise_data, 0, sizeof(m_advertise_data));
         std::memset(m_stations, 0, sizeof(m_stations));
+        std::memset(m_recent_scanners, 0, sizeof(m_recent_scanners));
         ResetStations();
         InitNodeStateChange();
     }
@@ -419,6 +420,22 @@ namespace ams::slp::ldn {
         return m_ipv4_address;
     }
 
+    bool LdnControl::IsKnownSessionPeer(u32 ip) const {
+        if (m_state != CommState::AccessPointCreated &&
+            m_state != CommState::Station &&
+            m_state != CommState::StationConnected) {
+            return true;   /* no active session yet -- nothing to filter against */
+        }
+        if (ip == m_ipv4_address)
+            return true;
+        for (int i = 0; i < m_network_info.ldn.nodeCount; i++) {
+            const NodeInfo &n = m_network_info.ldn.nodes[i];
+            if (n.isConnected && n.ipv4Address == ip)
+                return true;
+        }
+        return false;
+    }
+
     os::SystemEvent &LdnControl::GetStateChangeEvent() {
         return m_state_event;
     }
@@ -525,10 +542,41 @@ namespace ams::slp::ldn {
 
     /* ---- frame handlers (m_mutex held, run-loop thread) ---- */
 
+    void LdnControl::RecordScanner(u32 src_ip) {
+        s64 now = ams::os::GetSystemTick().GetInt64Value();
+        int free_slot = -1;
+        for (size_t i = 0; i < MaxRecentScanners; i++) {
+            ScannerEntry &e = m_recent_scanners[i];
+            if (e.used && e.ip == src_ip) {
+                e.last_tick = now;
+                return;
+            }
+            if (free_slot < 0 && (!e.used || (now - e.last_tick) > ScannerTimeoutTicks)) {
+                free_slot = static_cast<int>(i);
+            }
+        }
+        if (free_slot < 0)
+            free_slot = 0;   /* table full of live entries: evict slot 0 (oldest wins rarely matters here) */
+        m_recent_scanners[free_slot] = { src_ip, now, true };
+        ::slp::dbg::Trace("ldn: RecordScanner src=0x%08x slot=%d", src_ip, free_slot);
+    }
+
+    bool LdnControl::WasRecentScanner(u32 src_ip) {
+        s64 now = ams::os::GetSystemTick().GetInt64Value();
+        for (size_t i = 0; i < MaxRecentScanners; i++) {
+            ScannerEntry &e = m_recent_scanners[i];
+            if (e.used && e.ip == src_ip && (now - e.last_tick) <= ScannerTimeoutTicks)
+                return true;
+        }
+        return false;
+    }
+
     void LdnControl::HandleScan(u32 src_ip) {
         ::slp::dbg::Trace("ldn: HandleScan src=0x%08x state=%d", src_ip, (int)m_state);
         if (m_state != CommState::AccessPointCreated)
             return;
+
+        RecordScanner(src_ip);
 
         static thread_local NetworkInfo info;
         BuildNetwork(&info);
@@ -574,6 +622,20 @@ namespace ams::slp::ldn {
             return;
         if (len != sizeof(NodeInfo))
             return;
+
+        /* Foreign-session guard: on a shared internet relay, Connect frames
+         * from consoles in a totally different game session can reach us --
+         * the frame itself carries no session/network id (just a bare
+         * NodeInfo) to check against. Only accept it from an IP that scanned
+         * us recently (RecordScanner/WasRecentScanner), which every real
+         * joiner does as the first step of the join handshake. An existing,
+         * already-connected station retries its Connect without necessarily
+         * re-scanning first, so exempt known stations too. */
+        if (!WasRecentScanner(src_ip) && FindStationByIp(src_ip) < 0) {
+            ::slp::dbg::Trace("ldn: HandleConnect src=0x%08x REJECTED (no recent Scan from this "
+                               "IP -- likely foreign-session traffic on the relay)", src_ip);
+            return;
+        }
 
         NodeInfo node;
         std::memcpy(&node, body, sizeof(node));
@@ -624,7 +686,30 @@ namespace ams::slp::ldn {
 
         std::memcpy(&m_network_info, body, sizeof(m_network_info));
         if (m_state == CommState::Station) {
-            SetState(CommState::StationConnected);
+            /* Don't trust the first SyncNetwork alone: the host rebroadcasts
+             * it periodically and the relay path can drop our original
+             * Connect frame entirely, so a joiner could otherwise see a
+             * stale/unrelated SyncNetwork and declare itself connected while
+             * the host never actually registered it -- Connect()'s retry
+             * loop polls exactly this state as its success condition, so
+             * that false positive would silently end the retry with no
+             * real connection. Require our own IP to actually appear as a
+             * connected node in the synced NetworkInfo first. */
+            bool confirmed = false;
+            for (int i = 0; i < m_network_info.ldn.nodeCount; i++) {
+                const NodeInfo &n = m_network_info.ldn.nodes[i];
+                if (n.isConnected && n.ipv4Address == m_ipv4_address) {
+                    confirmed = true;
+                    break;
+                }
+            }
+            if (confirmed) {
+                ::slp::dbg::Trace("ldn: SyncNetwork confirms us as node, -> StationConnected");
+                SetState(CommState::StationConnected);
+            } else {
+                ::slp::dbg::Trace("ldn: SyncNetwork received but we're not in the node list yet, "
+                                   "staying Station (host hasn't registered us)");
+            }
         }
         OnNetworkInfoChanged();
     }
@@ -945,10 +1030,36 @@ namespace ams::slp::ldn {
                           SubnetBroadcast(),
                           (unsigned long long)m_scan_filter_lcid);
 
-        /* ldn_mitm sleeps 1s after broadcasting the Scan and then reads the
-         * results the recv thread collected; we do the same (the run-loop
-         * thread fills m_scan_results via HandleScanResp in that window). */
-        ams::os::SleepThread(ams::TimeSpan::FromSeconds(1));
+        /* This used to sleep a blind, unconditional 1s before reading
+         * results (matching original ldn_mitm) -- correct but needlessly
+         * slow: a lobby on a busy relay typically answers within one or two
+         * 100ms ticks, and every scan still paid the full second regardless.
+         * dogty's ldn_mitm fork (lan_discovery.cpp scan()) polls every
+         * 100ms up to 10 times and exits as soon as the result count has
+         * been stable for two consecutive checks; port that here. Also
+         * re-broadcast the Scan every 300ms (matching dogty) since this is
+         * UDP over a relay and the original Scan can simply be dropped. */
+        u16 last_count = 0;
+        int stable = 0;
+        for (int i = 0; i < 10; i++) {
+            if (i != 0 && i % 3 == 0) {
+                SendFrame(SubnetBroadcast(), LanPacket_Scan, nullptr, 0);
+            }
+            ams::os::SleepThread(ams::TimeSpan::FromMilliSeconds(100));
+
+            std::scoped_lock lk(m_mutex);
+            u16 cur = m_scan_result_count;
+            if (cur > 0 && cur == last_count) {
+                if (++stable >= 2) {
+                    ::slp::dbg::Trace("ldn: Scan stable at count=%u after %dms, returning early",
+                                      cur, (i + 1) * 100);
+                    break;
+                }
+            } else {
+                stable = 0;
+            }
+            last_count = cur;
+        }
 
         std::scoped_lock lk(m_mutex);
         u32 count = 0;

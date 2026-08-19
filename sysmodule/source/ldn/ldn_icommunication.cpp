@@ -11,6 +11,20 @@ extern "C" {
 
 namespace ams::slp::ldn {
 
+    LdnICommunicationService::~LdnICommunicationService() {
+        /* See the declaration's comment: force the shared LdnControl
+         * singleton back to a clean state on session teardown, covering the
+         * game-force-closed/crashed case where Finalize()/CloseAccessPoint()/
+         * DestroyNetwork() never arrive on their own. Finalize() is
+         * unconditionally safe to call regardless of current state (it just
+         * exits local network mode if entered, clears stations, and resets
+         * to CommState::None) -- so no guard is needed here for the normal
+         * case where the game already cleaned up properly; this is a no-op
+         * then. */
+        AMS_UNUSED(LdnControl::GetInstance().Finalize());
+        ::slp::dbg::Trace("ldn: ~LdnICommunicationService (session closed, state force-reset)");
+    }
+
     Result LdnICommunicationService::Initialize(const ams::sf::ClientProcessId &client_process_id) {
         ::slp::dbg::Trace("ldn: Initialize pid=0x%lx",
                           static_cast<unsigned long>(client_process_id.process_id.value));

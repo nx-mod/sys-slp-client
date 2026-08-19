@@ -12,6 +12,7 @@
 #include "proxy_socket_manager.hpp"
 #include "lan_addr_map.hpp"
 #include "bsd_log_shim.hpp"
+#include "ldn/ldn_control.hpp"
 
 namespace ams::mitm::bsd {
 
@@ -379,6 +380,38 @@ bool ProxySocketManager::RouteIncomingData(uint32_t source_ip, uint16_t source_p
                                             uint32_t dest_ip, uint16_t dest_port,
                                             ryu_ldn::bsd::ProtocolType protocol,
                                             const void* data, size_t data_len) {
+    /* Foreign-session guard, game-data counterpart to LdnControl's
+     * scanner-allowlist gate on the control handshake (ldn_control.cpp
+     * HandleConnect). A shared internet relay carries every session's
+     * traffic to every client; once we're actually in a session, drop game
+     * data whose source IP isn't a member of it rather than silently
+     * delivering it to a matched socket. Checked OUTSIDE m_mutex -- this
+     * takes LdnControl's own mutex internally, and RouteIncomingData is
+     * called from the tunnel thread while LdnControl's run-loop thread can
+     * itself call back into bsd paths, so nesting the two locks risks a
+     * lock-order inversion; not worth it for a check that doesn't need
+     * m_mutex at all.
+     *
+     * LAN-mode traffic (browse 30000, session 49152-49155, aux 40000/35000)
+     * is exempt: dogty's equivalent filter (InjectGameFrame, relay_client.cpp)
+     * only ever runs on the LDN game-data injection path -- his LAN-mode
+     * browse handling is a structurally separate code path that never
+     * touches session-membership state at all, by construction. Ours shares
+     * one RouteIncomingData chokepoint for both, so without this exemption
+     * LdnControl's session state (Station/StationConnected from an unrelated
+     * WiFi/LDN join) incorrectly gated LAN browse replies too -- confirmed on
+     * hardware: a LAN-mode host's browse reply got dropped as "foreign"
+     * solely because the console was mid-session in a completely different
+     * LDN network. LAN mode has no LDN session concept to check membership
+     * against in the first place. */
+    if (!::slp::netmap::IsLanModePort(dest_port) &&
+        !ams::slp::ldn::LdnControl::IsKnownSessionPeerPublic(source_ip)) {
+        LOG_WARN("bsd: RouteIncomingData DROP foreign-session src=0x%08x dport=%u len=%zu "
+                 "(not a member of our current LDN session)",
+                 source_ip, dest_port, data_len);
+        return false;
+    }
+
     std::scoped_lock lock(m_mutex);
 
     // For broadcast/multicast packets, deliver to ALL matching sockets.

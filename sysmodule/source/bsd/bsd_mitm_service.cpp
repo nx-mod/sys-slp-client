@@ -354,8 +354,14 @@ bool BsdMitmService::ShouldMitm(const sm::MitmProcessInfo& client_info) {
     // dummy-session skipping, LAN-signature detection, proxy sockets -- to
     // homebrew that just wants a normal socket. We have no business in those
     // processes: only real applications play LAN games.
-    constexpr u64 FirstApplicationProgramId = 0x0100000000010000ULL;
-    if (program_id < FirstApplicationProgramId) {
+    //
+    // Uses Atmosphere's own ams::ncm::IsApplicationId() (ported from dogty's
+    // ldn_mitm-dogty BsdMitmService::ShouldMitm, which does the same check)
+    // instead of a hand-rolled lower-bound compare: it's the same lower
+    // bound (ApplicationId::Start == 0x0100000000010000) but also enforces
+    // the upper bound (ApplicationId::End == 0x01FFFFFFFFFFFFFF), which our
+    // old check silently had no equivalent for.
+    if (!ams::ncm::IsApplicationId(client_info.program_id)) {
         LOG_INFO("BSD ShouldMitm #%u: SKIP (system/applet 0x%016lx)", call_id, program_id);
         return false;
     }
@@ -1014,10 +1020,18 @@ Result BsdMitmService::RecvMMsg(
     }
 
     if (is_proxy) {
-        // RecvMMsg on proxy sockets is complex due to the mmsghdr format.
-        // For now, log a warning - if this is hit, we need to investigate the game.
-        LOG_WARN("BSD RecvMMsg on proxy socket fd=%d - multi-message not fully supported, forwarding anyway", fd);
-        // Fall through to forward to real service
+        // RecvMMsg's mmsghdr batching isn't implemented against ProxySocket's
+        // queue yet. Forwarding to the real bsd:u service here is the actual
+        // bug: fd is a virtual LDN proxy socket, so the real service has no
+        // idea it exists and this call would silently read from (or block
+        // on) an unrelated/empty real socket instead of our relay queue.
+        // Fail cleanly so the caller falls back to single-message Recv/RecvFrom
+        // (which ARE proxy-aware) rather than get silently wrong data.
+        LOG_WARN("BSD RecvMMsg on proxy fd=%d rejected (unimplemented for proxy sockets, "
+                 "was previously silently forwarded to real bsd:u)", fd);
+        out_errno.SetValue(EOPNOTSUPP);
+        out_count.SetValue(-1);
+        R_SUCCEED();
     }
 
     // Forward to real service
@@ -1055,11 +1069,16 @@ Result BsdMitmService::SendMMsg(
     }
 
     if (is_proxy) {
-        // SendMMsg on proxy sockets is complex due to the mmsghdr format.
-        // For now, log a warning - if this is hit, we need to investigate the game.
-        LOG_WARN("BSD SendMMsg on proxy socket fd=%d - multi-message not fully supported, forwarding anyway", fd);
-        // Fall through to forward to real service - this will likely fail for LDN addresses
-        // but at least we'll see this in the logs
+        // Same reasoning as RecvMMsg: fd is a virtual LDN proxy socket, so
+        // forwarding to the real bsd:u service sends nowhere useful (it has
+        // no route for LDN peer addresses). Fail cleanly instead of
+        // silently forwarding so the caller falls back to single-message
+        // Send/SendTo (which ARE proxy-aware).
+        LOG_WARN("BSD SendMMsg on proxy fd=%d rejected (unimplemented for proxy sockets, "
+                 "was previously silently forwarded to real bsd:u)", fd);
+        out_errno.SetValue(EOPNOTSUPP);
+        out_count.SetValue(-1);
+        R_SUCCEED();
     }
 
     // Forward to real service

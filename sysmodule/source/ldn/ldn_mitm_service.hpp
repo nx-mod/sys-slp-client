@@ -27,18 +27,23 @@ namespace ams::slp::ldn {
          * intercepted when the relay is stopped — which previously caused
          * black screens).
          *
-         * Applies the same program_id floor as BsdMitmService::ShouldMitm.
+         * Applies the same application check as BsdMitmService::ShouldMitm.
          * This guard had none: it intercepted ldn:u for EVERY process while
          * running, including qlaunch/Home menu and the Album (the applet
          * hbloader hijacks — 0x010000000000100D). LdnControl is a global
          * singleton shared across every accepted client, so an applet
-         * touching ldn:u mid-session could clobber a game's CommState. */
+         * touching ldn:u mid-session could clobber a game's CommState.
+         *
+         * Was a hand-rolled lower-bound-only compare (matching the same bug
+         * already fixed in BsdMitmService::ShouldMitm -- this copy's own
+         * comment claimed parity with that check but wasn't updated when it
+         * was fixed). ams::ncm::IsApplicationId also enforces the upper
+         * bound (ApplicationId::End) this never had. */
         static bool ShouldMitm(const ams::sm::MitmProcessInfo &client_info) {
             if (::slp::rt::GetRuntime().GetState() != SLPCFG_STATE_RUNNING)
                 return false;
 
-            constexpr u64 FirstApplicationProgramId = 0x0100000000010000ULL;
-            return client_info.program_id.value >= FirstApplicationProgramId;
+            return ams::ncm::IsApplicationId(client_info.program_id);
         }
 
         Result CreateUserLocalCommunicationService(
