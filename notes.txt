@@ -1,0 +1,142 @@
+sys-slp-client — consolidated findings, caveats, and open questions
+(merged from notes/*.md; source notes untouched)
+
+====================================================================
+FINDINGS
+====================================================================
+
+-- Relay wire format --
+
+- Every UDP datagram to/from an slp relay is [1-byte header][payload].
+  Header bit7 (0x80) = encrypted flag (unused by clients), bits6-0 = type.
+  Types: 0x00 Keepalive, 0x01 Ipv4, 0x02 Ping, 0x03 Ipv4Frag, 0x04 AuthMe,
+  0x10 Info (server->client room info).
+- Keepalive (b"\x00", ~every 10s) is what registers a peer in the relay's
+  cache. A peer that has never sent a parseable non-ping datagram is
+  invisible to broadcasts.
+- Ping is NOT wire-compatible between server implementations (TS server:
+  [0x02]+3B; Rust server: [0x02]+4B). Real lan-play clients never ping —
+  keepalive is the only compatibility-critical liveness path.
+- Relay routing: unicast if the destination IP is in the peer map, else
+  broadcast to every other registered peer.
+- The relay's ldn_mitm plugin broadcasts a fixed scan-advertisement packet
+  every 5s from its own source address — this is room-scan advertisement,
+  not game traffic, and is a type-0 Scan (request) that only triggers a
+  reply; it never populates scan results on its own.
+
+-- LAN mode (MK8DX-style browse/reply) --
+
+- Browse request (Pia 5.7+ format): 873B = [type][u32 size 0x23A][570B
+  criteria][0x12A challenge]. Challenge version 1 = Pia 5.7-5.10.
+- The browse-reply challenge's AES-GCM nonce uses the game's REAL WiFi
+  subnet broadcast address, not any virtual/tunnel address.
+- Pia keepalive (port 49152, ~every 2s, sent regardless of session state,
+  ignored by the receiver): Pia >= 5.28 sends it to loopback (127.0.0.1)
+  instead of broadcast; earlier versions broadcast it.
+- MK8DX uses the OLD (5.3-5.6) session-info layout even though its browse
+  request has a 5.7+-style challenge attached (a hybrid) — the reply body
+  layout matters independently of whether the challenge itself is
+  strictly required for acceptance.
+- Search-criteria fields a joining game filters replies on: min/max
+  participants, opened-only, game_mode, session_type, search flags.
+- Pia game keys are public per-title constants (from the community
+  Pia-Game-Keys wiki) for several first-party titles; most others derive
+  their key via ENL (seed + game table) instead of a fixed constant.
+- LanSessionInfo has (at least) two distinct wire layouts depending on
+  Pia era: "5.3-5.6" and "5.10+", with different field offsets (e.g. the
+  host name field shifts by one byte between them).
+
+-- LDN control plane --
+
+- LDN has no DHCP: each node's IP comes from the NodeInfo array inside
+  NetworkInfo. Once an LDN network forms, the game's Pia mesh/session
+  traffic runs over normal bsd:u sockets bound to the LDN-assigned
+  address — i.e. the LDN data plane is byte-shape-identical to the
+  LAN-mode data plane.
+- Scan filter's LocalCommunicationId is a u64 title id.
+- On Connect, the host stamps the joining station's NodeInfo.ipv4Address
+  with the source IP seen on the frame, plus a matching fake MAC, so
+  GetIpv4Address() and NetworkInfo's node entries stay consistent.
+- IP byte-order rule (confirmed against a reference implementation): a
+  node's ipv4Address must equal the tunnel's virtual IP byte-for-byte,
+  not byte-swapped — games match GetIpv4Address() against the NetworkInfo
+  node list, and a mismatch breaks local-node lookup.
+- The host assigns station node ids incrementally (no TCP accept order to
+  derive them from, since the transport is a UDP tunnel, not real TCP
+  sockets per station).
+- Control frames are processed inline on the relay run-loop thread, not a
+  dedicated worker thread.
+- 25 known native-LAN titles all use UDP for gameplay; no confirmed TCP
+  usage in any LAN mode among researched titles. They split into
+  Pia-based (Nintendo first/some third-party) and custom/classic-FPS
+  netcode (UDP broadcast discovery, no Pia).
+- ~198 additional titles are Local-Wireless-only (ldn:u, no raw LAN
+  sockets) — their data plane, once a network is formed, rides the same
+  bsd:u proxy path as LAN-mode titles; only the control plane differs.
+
+-- Config / IPC --
+
+- slp:cfg out-buffers must be declared as the map-alias-and-pointer
+  buffer type to match how the overlay client sends them — a plain
+  map-alias-only or scalar-out declaration is rejected by the IPC
+  dispatcher for a pointer-mode call.
+- servers.conf format: one server per line, `name host:port` (or `name
+  host port`), `#` comments, max 10 servers; a missing/unreadable file
+  means 0 servers and a graceful (non-crashing) failure to start.
+- The Tesla overlay does not auto-initialize the service manager or
+  auto-mount the SD card — service lookups and SD reads each need their
+  own explicit init/mount wrapper.
+
+====================================================================
+CAVEATS
+====================================================================
+
+- The relay's IP-to-socket-address map is never pruned. A client that
+  reconnects while reusing the same virtual IP is unicast to its OLD,
+  dead socket entry until it sends a fresh frame that refreshes the
+  mapping — the first frame after any (re)connect can be silently
+  black-holed. Mitigation: keepalive + periodic broadcast to force a
+  refresh, and always test against a freshly-started relay process
+  rather than a long-lived one.
+- The LDN control plane currently has no stale-station reaping: a UDP
+  tunnel has no per-station "connection closed" signal the way a
+  TCP-based design would, so a peer that disappears without formally
+  leaving stays in the host's node list until an explicit
+  CloseAccessPoint/DestroyNetwork/reset.
+- Byte order and layout are NOT proven by the Python protocol spikes —
+  the spikes intentionally use a different (big-endian, length-prefixed)
+  encoding to validate state-machine flow only. Real interop depends on
+  matching a reference implementation's native packed struct layout
+  exactly (fixed struct sizes for NetworkInfo, ConnectNetworkData,
+  ScanFilter, etc.), and can only be confirmed on the wire against a real
+  peer, not against the spike.
+- LAN mode and WiFi/LDN mode are genuinely different code paths within
+  the same game (MK8DX): behavior/results observed in one mode do not
+  necessarily transfer to the other, and both need to be tested
+  independently.
+- Literal IP addresses and DNS-resolved hostnames are not interchangeable
+  test cases — anything that depends on name resolution needs its own
+  verification separate from a literal-IP test, since resolution is a
+  distinct code path from the rest of the transport.
+
+====================================================================
+OPEN QUESTIONS
+====================================================================
+
+- Whether any titles need ldn:u's Private variants (ScanPrivate /
+  CreateNetworkPrivate) or other non-default LocalCommunicationId
+  handling — noted as a possibility for at least one title (ARMS) but
+  unverified.
+- How aggressively a host should reap dead/unresponsive nodes when a
+  peer disappears without leaving the room — no timeout policy has been
+  decided yet.
+- Which exact Pia version each 6.x-era title uses (affects only which
+  browse port — 30000 vs 35000 — a test tool needs to speak, not the
+  tunnel itself).
+- Whether any LAN title binds a specific non-LAN IP for unicast receive
+  (which would bypass the proxy entirely) — none observed among titles
+  researched so far, but not exhaustively ruled out.
+- Real two-console (or console + independently-known-good peer) join
+  testing is still the main outstanding validation step for both the LAN
+  and LDN paths — everything above has been validated against a relay
+  and/or a single console's own traces, not a live two-peer join.

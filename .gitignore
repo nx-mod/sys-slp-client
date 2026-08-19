@@ -7,6 +7,7 @@ overlay/build/
 overlay/*.elf
 overlay/*.ovl
 sysmodule/source/build_id.h
+/sdcard/
 
 # OS / editor cruft
 .DS_Store

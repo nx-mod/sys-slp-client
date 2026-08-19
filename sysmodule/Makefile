@@ -134,3 +134,29 @@ endif
 .PHONY: print-build-id
 print-build-id:
 	@echo $(SLP_BUILD_ID)
+
+# Assembles a self-contained, ready-to-copy SD card layout under
+# sysmodule/../sdcard/ (project root): atmosphere/contents/<title id>/
+# (exefs.nsp, toolbox.json, flags/boot2.flag), config/slp-helper/
+# servers.conf, and switch/.overlays/slp-helper.ovl if the overlay has
+# already been built separately. boot2.flag is always rewritten empty so
+# a copy of this folder always (re-)enables the module.
+.PHONY: sdcard
+SDCARD_ROOT      := $(CURDIR)/../sdcard
+SDCARD_TITLE_ID  := 4200000000000011
+SDCARD_TITLE_DIR := $(SDCARD_ROOT)/atmosphere/contents/$(SDCARD_TITLE_ID)
+sdcard: all
+	@mkdir -p "$(SDCARD_TITLE_DIR)/flags"
+	@cp $(TARGET).nsp "$(SDCARD_TITLE_DIR)/exefs.nsp"
+	@cp res/toolbox.json "$(SDCARD_TITLE_DIR)/toolbox.json"
+	@rm -rf "$(SDCARD_TITLE_DIR)/romfs"
+	@: > "$(SDCARD_TITLE_DIR)/flags/boot2.flag"
+	@mkdir -p "$(SDCARD_ROOT)/config/slp-helper"
+	@cp ../config/servers.conf "$(SDCARD_ROOT)/config/slp-helper/servers.conf"
+	@if [ -f ../overlay/slp-helper.ovl ]; then \
+		mkdir -p "$(SDCARD_ROOT)/switch/.overlays"; \
+		cp ../overlay/slp-helper.ovl "$(SDCARD_ROOT)/switch/.overlays/slp-helper.ovl"; \
+	else \
+		echo "note: ../overlay/slp-helper.ovl not built yet -- sdcard/ omits switch/.overlays/"; \
+	fi
+	@echo "sdcard/ install folder ready at $(SDCARD_ROOT)"
