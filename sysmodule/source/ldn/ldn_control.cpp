@@ -178,7 +178,8 @@ namespace ams::slp::ldn {
         : m_state(CommState::None), m_disconnect_reason(0),
           m_ipv4_address(0x0A0D2502), m_subnet_mask(0xFFFF0000),
           m_advertise_size(0), m_station_accept_policy(0),
-          m_scan_filter_lcid(0), m_scan_result_count(0)
+          m_scan_filter_lcid(0), m_scan_result_count(0),
+          m_join_active(false), m_host_last_seen(0), m_last_beacon(0)
     {
         std::memset(&m_network_info, 0, sizeof(m_network_info));
         std::memset(&m_network_config, 0, sizeof(m_network_config));
@@ -186,6 +187,7 @@ namespace ams::slp::ldn {
         std::memset(m_advertise_data, 0, sizeof(m_advertise_data));
         std::memset(m_stations, 0, sizeof(m_stations));
         std::memset(m_recent_scanners, 0, sizeof(m_recent_scanners));
+        std::memset(&m_join_target_bssid, 0, sizeof(m_join_target_bssid));
         ResetStations();
         InitNodeStateChange();
     }
@@ -235,6 +237,7 @@ namespace ams::slp::ldn {
 
         m_scan_result_count = 0;
         m_scan_filter_lcid  = 0;
+        m_join_active       = false;
         ResetStations();
         SetState(CommState::None);
         R_SUCCEED();
@@ -535,6 +538,12 @@ namespace ams::slp::ldn {
             case LanPacket_SyncNetwork:
                 HandleSyncNetwork(src_ip, body, body_len);
                 break;
+            case LanPacket_RelayHeartbeat:
+                HandleRelayHeartbeat(src_ip, body, body_len);
+                break;
+            case LanPacket_RelayBye:
+                HandleRelayBye(src_ip, body, body_len);
+                break;
             default:
                 break;
         }
@@ -587,6 +596,16 @@ namespace ams::slp::ldn {
     void LdnControl::HandleScanResp(u32 src_ip, const u8 *body, size_t len) {
         if (len != sizeof(NetworkInfo)) {
             ::slp::dbg::Trace("ldn: HandleScanResp src=0x%08x BAD_LEN %zu", src_ip, len);
+            return;
+        }
+
+        /* Self-echo guard: a relay can hand a broadcast right back to its
+         * own sender. Some games will attempt to join their own
+         * advertisement if it's ever handed to them as a scan result, so
+         * drop it before it's even parsed. Ported from dogty's ldn_mitm
+         * fork (both his UDP and relay receive paths carry this same
+         * check). */
+        if (src_ip == m_ipv4_address) {
             return;
         }
 
@@ -669,6 +688,7 @@ namespace ams::slp::ldn {
         s.node.macAddress  = FakeMac(src_ip);
         s.node.nodeId      = nid;
         s.node.isConnected = 1;
+        s.last_seen        = ams::os::GetSystemTick().GetInt64Value();
 
         ::slp::dbg::Trace("ldn: station %d %s ip=%u.%u.%u.%u", nid,
                           is_retry ? "RE-CONFIRMED (retry, same slot)" : "connected",
@@ -684,7 +704,26 @@ namespace ams::slp::ldn {
         if (m_state != CommState::Station && m_state != CommState::StationConnected)
             return;
 
+        /* Session-scoping gate: while we're actively targeting a specific
+         * network (m_join_active, set by Connect()), reject a SyncNetwork
+         * from any OTHER network before it ever touches m_network_info --
+         * not just before trusting it, but before copying it in at all.
+         * Without this, a stale/foreign session's periodic re-sync (a
+         * shared relay carries every session's traffic to every client)
+         * can silently overwrite our view of our own network, corrupting
+         * an already-established station as easily as a fresh join. */
+        if (m_join_active) {
+            const auto *incoming = reinterpret_cast<const NetworkInfo *>(body);
+            if (std::memcmp(&incoming->common.bssid, &m_join_target_bssid,
+                             sizeof(MacAddress)) != 0) {
+                ::slp::dbg::Trace("ldn: SyncNetwork DROP -- bssid doesn't match our join target "
+                                   "(foreign/stale session on a shared relay)");
+                return;
+            }
+        }
+
         std::memcpy(&m_network_info, body, sizeof(m_network_info));
+        m_host_last_seen = ams::os::GetSystemTick().GetInt64Value();
         if (m_state == CommState::Station) {
             /* Don't trust the first SyncNetwork alone: the host rebroadcasts
              * it periodically and the relay path can drop our original
@@ -712,6 +751,58 @@ namespace ams::slp::ldn {
             }
         }
         OnNetworkInfoChanged();
+    }
+
+    /* Station-side liveness signal (host updates the matching station's
+     * last_seen) and host-side "I heard from this station" refresh. Scoped
+     * to our own bssid so a shared relay's foreign heartbeats can't refresh
+     * an unrelated session's station. Ported from dogty's ldn_mitm fork. */
+    void LdnControl::HandleRelayHeartbeat(u32 src_ip, const u8 *body, size_t len) {
+        if (len != sizeof(RelayHeartbeatPayload))
+            return;
+        if (m_state != CommState::AccessPointCreated)
+            return;
+        const auto *hb = reinterpret_cast<const RelayHeartbeatPayload *>(body);
+        if (std::memcmp(&hb->bssid, &m_network_info.common.bssid, sizeof(MacAddress)) != 0)
+            return;
+
+        int nid = FindStationByIp(src_ip);
+        if (nid > 0) {
+            m_stations[nid - 1].last_seen = ams::os::GetSystemTick().GetInt64Value();
+        }
+    }
+
+    /* "I am leaving this session, on purpose" -- lets the other side react
+     * immediately instead of waiting out RelayPeerTimeoutTicks for what was
+     * a clean goodbye. Ported from dogty's ldn_mitm fork. */
+    void LdnControl::HandleRelayBye(u32 src_ip, const u8 *body, size_t len) {
+        if (len != sizeof(RelayHeartbeatPayload))
+            return;
+        const auto *bye = reinterpret_cast<const RelayHeartbeatPayload *>(body);
+
+        if (m_state == CommState::StationConnected) {
+            bool host_left = m_join_active &&
+                std::memcmp(&bye->bssid, &m_join_target_bssid, sizeof(MacAddress)) == 0 &&
+                bye->ipv4 == m_network_info.ldn.nodes[0].ipv4Address;
+            if (host_left) {
+                ::slp::dbg::Trace("ldn: host Bye (0x%08x), ending session", bye->ipv4);
+                m_disconnect_reason = 3;   /* LdnDisconnectReason_DestroyedByUser */
+                m_join_active = false;
+                SetState(CommState::Station);
+            }
+        } else if (m_state == CommState::AccessPointCreated) {
+            if (std::memcmp(&bye->bssid, &m_network_info.common.bssid, sizeof(MacAddress)) != 0)
+                return;
+            int nid = FindStationByIp(src_ip);
+            if (nid > 0) {
+                ::slp::dbg::Trace("ldn: station %d Bye (0x%08x), dropping", nid, bye->ipv4);
+                Station &s = m_stations[nid - 1];
+                s.active    = false;
+                s.connected = false;
+                std::memset(&s.node, 0, sizeof(s.node));
+                UpdateNodes();
+            }
+        }
     }
 
     /* ---- host side ---- */
@@ -794,6 +885,15 @@ namespace ams::slp::ldn {
 
     Result LdnControl::DestroyNetwork() {
         std::scoped_lock lk(m_mutex);
+        /* Tell every connected station now, on purpose, instead of making
+         * them wait out RelayPeerTimeoutTicks for what is a clean exit. */
+        if (StationCount() > 0) {
+            RelayHeartbeatPayload bye{};
+            bye.bssid = m_network_info.common.bssid;
+            bye.ipv4  = m_ipv4_address;   /* host is always node[0] */
+            SendFrame(SubnetBroadcast(), LanPacket_RelayBye,
+                      reinterpret_cast<const u8 *>(&bye), sizeof(bye));
+        }
         ResetStations();
         SetState(CommState::AccessPoint);
         R_SUCCEED();
@@ -924,6 +1024,57 @@ namespace ams::slp::ldn {
 
     u32 LdnControl::SubnetBroadcast() const {
         return m_ipv4_address | ~m_subnet_mask;
+    }
+
+    void LdnControl::Tick() {
+        std::scoped_lock lk(m_mutex);
+        s64 now = ams::os::GetSystemTick().GetInt64Value();
+        if (now - m_last_beacon < RelayBeaconIntervalTicks)
+            return;
+        m_last_beacon = now;
+
+        if (m_state == CommState::AccessPointCreated) {
+            /* Reap stations silent for RelayPeerTimeoutTicks (a shared UDP
+             * relay has no TCP close to report a dropped peer). */
+            for (int nid = 1; nid < NodeCountMax; nid++) {
+                Station &s = m_stations[nid - 1];
+                if (!s.active || !s.connected)
+                    continue;
+                if (now - s.last_seen >= RelayPeerTimeoutTicks) {
+                    ::slp::dbg::Trace("ldn: station %d (0x%08x) silent > %llds, dropping",
+                                      nid, s.src_ip,
+                                      (long long)(RelayPeerTimeoutTicks / 19200000));
+                    s.active    = false;
+                    s.connected = false;
+                    std::memset(&s.node, 0, sizeof(s.node));
+                }
+            }
+            /* Always resend: recounts + re-syncs survivors after any reap,
+             * and otherwise doubles as a periodic NetworkInfo refresh. */
+            UpdateNodes();
+        } else if (m_state == CommState::Station || m_state == CommState::StationConnected) {
+            if (m_join_active) {
+                RelayHeartbeatPayload hb{};
+                hb.bssid = m_join_target_bssid;
+                hb.ipv4  = m_ipv4_address;
+                u32 host_ip = (m_state == CommState::StationConnected &&
+                               m_network_info.ldn.nodeCount > 0)
+                                   ? m_network_info.ldn.nodes[0].ipv4Address
+                                   : 0;
+                if (host_ip != 0) {
+                    SendFrame(host_ip, LanPacket_RelayHeartbeat,
+                              reinterpret_cast<const u8 *>(&hb), sizeof(hb));
+                }
+            }
+            if (m_state == CommState::StationConnected &&
+                now - m_host_last_seen >= RelayPeerTimeoutTicks) {
+                ::slp::dbg::Trace("ldn: host silent > %llds, disconnecting",
+                                  (long long)(RelayPeerTimeoutTicks / 19200000));
+                m_disconnect_reason = 6;   /* LdnDisconnectReason_SignalLost */
+                m_join_active = false;
+                SetState(CommState::Station);
+            }
+        }
     }
 
     void LdnControl::InitNodeStateChange() {
@@ -1111,6 +1262,14 @@ namespace ams::slp::ldn {
             host_ip = data.ldn.nodes[0].ipv4Address;
             m_scan_result_count = 0;
             m_scan_filter_lcid  = 0;
+
+            /* Record the target network before Connect goes out, so
+             * HandleSyncNetwork can reject a sync from a DIFFERENT network
+             * (e.g. a stale session we no longer target, still
+             * periodically re-syncing on a shared relay) instead of
+             * accepting any self-IP-confirmed sync regardless of source. */
+            m_join_active        = true;
+            m_join_target_bssid  = data.common.bssid;
         }
 
         NodeInfo my;
@@ -1136,10 +1295,7 @@ namespace ams::slp::ldn {
          * for 3s, retransmitting Connect every 500ms; HandleConnect's
          * retry-dedup (FindStationByIp) makes repeat sends safe -- the host
          * reuses the same station slot instead of filling the room with
-         * duplicates. Still returns success either way (matches
-         * ldn_mitm convention: games poll GetState() themselves for the
-         * real join status), but now gives the handshake a real chance to
-         * land within the window instead of one shot. */
+         * duplicates. */
         for (int i = 0; i < 300; i++) {
             {
                 std::scoped_lock lk(m_mutex);
@@ -1153,11 +1309,36 @@ namespace ams::slp::ldn {
             }
             ams::os::SleepThread(ams::TimeSpan::FromMilliSeconds(10));
         }
-        R_SUCCEED();
+
+        /* Real timeout: the host never synced us in, over 3s and several
+         * retransmits. Report failure instead of success -- a blind
+         * success here previously left the game believing it joined while
+         * GetState() would report Station forever, hanging with no nodes
+         * rather than showing its normal "couldn't join" error. Module
+         * 0xCB (LdnModuleId) + description 64 is nn::ldn's own
+         * ConnectFailed code (2203-0064); games recognize it and handle it
+         * normally, unlike an arbitrary/unknown module which can make some
+         * titles abort instead of erroring gracefully. */
+        {
+            std::scoped_lock lk(m_mutex);
+            m_join_active = false;
+        }
+        ::slp::dbg::Trace("ldn: Connect timed out, no SyncNetwork from host -- reporting failure");
+        return MakeError(LdnModuleId, 64);
     }
 
     Result LdnControl::Disconnect() {
         std::scoped_lock lk(m_mutex);
+        /* Tell the host now, on purpose, instead of it waiting out
+         * RelayPeerTimeoutTicks for what is a clean exit. */
+        if (m_join_active && m_network_info.ldn.nodeCount > 0) {
+            RelayHeartbeatPayload bye{};
+            bye.bssid = m_join_target_bssid;
+            bye.ipv4  = m_ipv4_address;
+            SendFrame(m_network_info.ldn.nodes[0].ipv4Address, LanPacket_RelayBye,
+                      reinterpret_cast<const u8 *>(&bye), sizeof(bye));
+        }
+        m_join_active = false;
         ResetStations();
         SetState(CommState::Station);
         R_SUCCEED();

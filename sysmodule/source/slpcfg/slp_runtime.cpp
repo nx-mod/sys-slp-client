@@ -3,6 +3,7 @@
 #include "servers.h"
 #include "slp_trace.hpp"
 #include "../tunnel/slp_tunnel.hpp"
+#include "../ldn/ldn_control.hpp"
 
 #include <cstring>
 #include <cstdio>
@@ -315,6 +316,11 @@ namespace slp::rt {
                     }
                 }
             }
+
+            /* Self-gated on its own beacon interval -- cheap to call every
+             * iteration. Drives LDN station/host liveness heartbeats and
+             * stale-peer reaping (see LdnControl::Tick()). */
+            ams::slp::ldn::LdnControl::GetInstance().Tick();
 
             int type = 0;
             int n = slpClientRecv(c, buf, sizeof(buf), (int)RecvTimeoutMs, &type);

@@ -56,3 +56,27 @@ cd sysmodule && make
 - https://github.com/spacemeowx2/slp-server-rust
 - https://github.com/Ryubing/LdnServer
 - https://github.com/dogty/ldn_mitm
+
+## Untested fixes (built, not yet verified on hardware)
+
+Landed but not yet retested on a real console — flagging so a regression
+here is easy to trace back:
+
+- `HandleSyncNetwork` now rejects a SyncNetwork frame whose network doesn't
+  match the one `Connect()` actually targeted, instead of accepting any
+  self-IP-confirmed sync regardless of source (foreign/stale session on a
+  shared relay could previously corrupt an in-flight or already-established
+  join).
+- `Connect()` now reports a real failure (nn::ldn's own ConnectFailed code)
+  after a genuine 3s timeout with no SyncNetwork from the host, instead of
+  always reporting success and leaving the game to hang with no nodes.
+- New peer-liveness mechanism: stations heartbeat the host every ~5s over
+  the relay, the host reaps a station silent for 30s (and re-syncs the
+  survivors), and a station similarly disconnects if the host goes silent
+  for 30s. A clean disconnect (either side) now also sends an explicit
+  goodbye frame so the other side reacts immediately instead of waiting
+  out the timeout. None of this existed before — a dropped peer used to
+  stay in the room forever.
+- `HandleScanResp` now drops a scan result whose source is our own virtual
+  IP (a relay can hand a broadcast back to its own sender), which could
+  previously make a game attempt to join its own advertisement.

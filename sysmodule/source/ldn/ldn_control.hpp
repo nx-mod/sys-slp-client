@@ -23,13 +23,38 @@ namespace ams::slp::ldn {
 
     constexpr u16 ControlPort = 11452;   /* ldn_mitm DefaultPort */
 
-    /* LAN control frame types (lan_protocol.hpp). */
+    /* LAN control frame types (lan_protocol.hpp). Values 4/5 are ported from
+     * dogty's ldn_mitm fork (lan_protocol.hpp): a relay has no TCP close to
+     * signal a dropped/departed peer, so those two exist purely to give the
+     * UDP-tunneled control plane a liveness signal. Safe to add: any older
+     * implementation (real ldn_mitm, an earlier build of this project) that
+     * doesn't recognize a type just ignores the frame. */
     enum LanPacketType : u8 {
-        LanPacket_Scan        = 0,
-        LanPacket_ScanResp    = 1,
-        LanPacket_Connect     = 2,
-        LanPacket_SyncNetwork = 3,
+        LanPacket_Scan          = 0,
+        LanPacket_ScanResp      = 1,
+        LanPacket_Connect       = 2,
+        LanPacket_SyncNetwork   = 3,
+        LanPacket_RelayHeartbeat = 4,
+        LanPacket_RelayBye       = 5,
     };
+
+    /* Payload of LanPacket_RelayHeartbeat and LanPacket_RelayBye (ported from
+     * dogty's RelayHeartbeatPayload). bssid scopes it to one session (a
+     * shared relay carries other sessions' frames too); ipv4 is the sender's
+     * address in the same format as NodeInfo::ipv4Address, so the receiver
+     * can match it against a specific station (or node[0], the host). */
+    struct RelayHeartbeatPayload {
+        MacAddress bssid;
+        u8 _pad[2];
+        u32 ipv4;
+    };
+
+    /* Beacon cadence and peer-silence timeout for the heartbeat/reap
+     * mechanism above (values matched to dogty's proven ones: 5s / 30s).
+     * Raw tick units (19.2MHz), matching this file's existing
+     * ScannerTimeoutTicks convention rather than os::Tick/ConvertToTimeSpan. */
+    constexpr s64 RelayBeaconIntervalTicks = 19200000 * 5;
+    constexpr s64 RelayPeerTimeoutTicks    = 19200000 * 30;
 
     constexpr size_t MaxScanResults = 8;
 
@@ -47,6 +72,14 @@ namespace ams::slp::ldn {
         /* Send a control frame to one peer or the subnet broadcast. */
         void SendFrame(u32 dst_ip, LanPacketType type,
                        const u8 *body, size_t body_len);
+
+        /* Called once per run-loop iteration (slp_runtime.cpp RunLoop) --
+         * internally gated on RelayBeaconIntervalMs, so most calls are a
+         * cheap no-op. Host: reaps stations silent for RelayPeerTimeoutMs
+         * and re-syncs survivors. Station: sends a liveness heartbeat to
+         * the host and disconnects if the host has gone silent for
+         * RelayPeerTimeoutMs. See ldn_control.cpp for the port notes. */
+        void Tick();
 
         /* ---- lifecycle (IPC thread) ---- */
 
@@ -145,6 +178,7 @@ namespace ams::slp::ldn {
             bool     connected;
             u32      src_ip;        /* Ryujinx format */
             NodeInfo node;
+            s64      last_seen;     /* raw tick, last heartbeat/Connect-retry from this station */
         };
 
         LdnControl();
@@ -179,6 +213,8 @@ namespace ams::slp::ldn {
         void HandleScanResp(u32 src_ip, const u8 *body, size_t len);
         void HandleConnect(u32 src_ip, const u8 *body, size_t len);
         void HandleSyncNetwork(u32 src_ip, const u8 *body, size_t len);
+        void HandleRelayHeartbeat(u32 src_ip, const u8 *body, size_t len);
+        void HandleRelayBye(u32 src_ip, const u8 *body, size_t len);
 
         /* Host helpers. */
         void BuildNetwork(NetworkInfo *out);
@@ -217,6 +253,17 @@ namespace ams::slp::ldn {
         u64             m_scan_filter_lcid;   /* 0 = no filter */
         NetworkInfo     m_scan_results[MaxScanResults];
         u16             m_scan_result_count;
+
+        /* Station side: which network Connect() is currently targeting, so
+         * HandleSyncNetwork can reject a frame from a DIFFERENT network
+         * (e.g. a stale session we no longer target, still periodically
+         * re-syncing on a shared relay) instead of accepting any
+         * self-IP-confirmed sync regardless of source. Set at the start of
+         * Connect(), cleared on Disconnect()/Finalize(). */
+        bool            m_join_active;
+        MacAddress      m_join_target_bssid;
+        s64             m_host_last_seen;   /* raw tick, station side: last SyncNetwork from the host */
+        s64             m_last_beacon;      /* raw tick, Tick()'s own cadence gate */
 
         /* Host side: recent-scanner allowlist. A shared internet relay puts
          * consoles from totally unrelated game sessions on the same wire, and
