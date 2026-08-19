@@ -24,32 +24,10 @@ FINDINGS
   not game traffic, and is a type-0 Scan (request) that only triggers a
   reply; it never populates scan results on its own.
 
--- LAN mode (MK8DX-style browse/reply) --
-
-- Browse request (Pia 5.7+ format): 873B = [type][u32 size 0x23A][570B
-  criteria][0x12A challenge]. Challenge version 1 = Pia 5.7-5.10.
-- The browse-reply challenge's AES-GCM nonce uses the game's REAL WiFi
-  subnet broadcast address, not any virtual/tunnel address.
-- Pia keepalive (port 49152, ~every 2s, sent regardless of session state,
-  ignored by the receiver): Pia >= 5.28 sends it to loopback (127.0.0.1)
-  instead of broadcast; earlier versions broadcast it.
-- MK8DX uses the OLD (5.3-5.6) session-info layout even though its browse
-  request has a 5.7+-style challenge attached (a hybrid) — the reply body
-  layout matters independently of whether the challenge itself is
-  strictly required for acceptance.
-- Search-criteria fields a joining game filters replies on: min/max
-  participants, opened-only, game_mode, session_type, search flags.
-- Pia game keys are public per-title constants (from the community
-  Pia-Game-Keys wiki) for several first-party titles; most others derive
-  their key via ENL (seed + game table) instead of a fixed constant.
-- LanSessionInfo has (at least) two distinct wire layouts depending on
-  Pia era: "5.3-5.6" and "5.10+", with different field offsets (e.g. the
-  host name field shifts by one byte between them).
-
 -- LDN control plane --
 
 - LDN has no DHCP: each node's IP comes from the NodeInfo array inside
-  NetworkInfo. Once an LDN network forms, the game's Pia mesh/session
+  NetworkInfo. Once an LDN network forms, the game's own mesh/session
   traffic runs over normal bsd:u sockets bound to the LDN-assigned
   address — i.e. the LDN data plane is byte-shape-identical to the
   LAN-mode data plane.
@@ -66,13 +44,11 @@ FINDINGS
   sockets per station).
 - Control frames are processed inline on the relay run-loop thread, not a
   dedicated worker thread.
-- 25 known native-LAN titles all use UDP for gameplay; no confirmed TCP
-  usage in any LAN mode among researched titles. They split into
-  Pia-based (Nintendo first/some third-party) and custom/classic-FPS
-  netcode (UDP broadcast discovery, no Pia).
-- ~198 additional titles are Local-Wireless-only (ldn:u, no raw LAN
-  sockets) — their data plane, once a network is formed, rides the same
-  bsd:u proxy path as LAN-mode titles; only the control plane differs.
+- Known native-LAN-mode titles all use UDP for gameplay; no confirmed TCP
+  usage in any LAN mode among researched titles.
+- Local-Wireless-only titles (ldn:u, no raw LAN sockets) — their data
+  plane, once a network is formed, rides the same bsd:u proxy path as
+  LAN-mode titles; only the control plane differs.
 
 -- Config / IPC --
 
@@ -103,17 +79,14 @@ CAVEATS
   TCP-based design would, so a peer that disappears without formally
   leaving stays in the host's node list until an explicit
   CloseAccessPoint/DestroyNetwork/reset.
-- Byte order and layout are NOT proven by the Python protocol spikes —
-  the spikes intentionally use a different (big-endian, length-prefixed)
-  encoding to validate state-machine flow only. Real interop depends on
-  matching a reference implementation's native packed struct layout
-  exactly (fixed struct sizes for NetworkInfo, ConnectNetworkData,
-  ScanFilter, etc.), and can only be confirmed on the wire against a real
-  peer, not against the spike.
-- LAN mode and WiFi/LDN mode are genuinely different code paths within
-  the same game (MK8DX): behavior/results observed in one mode do not
-  necessarily transfer to the other, and both need to be tested
-  independently.
+- Byte order and layout must match a reference implementation's native
+  packed struct layout exactly (fixed struct sizes for NetworkInfo,
+  ConnectNetworkData, ScanFilter, etc.) — this can only be confirmed on
+  the wire against a real peer.
+- LAN mode and WiFi/LDN mode are genuinely different code paths, even
+  within a single title that offers both: behavior/results observed in
+  one mode do not necessarily transfer to the other, and both need to be
+  tested independently.
 - Literal IP addresses and DNS-resolved hostnames are not interchangeable
   test cases — anything that depends on name resolution needs its own
   verification separate from a literal-IP test, since resolution is a
@@ -125,14 +98,11 @@ OPEN QUESTIONS
 
 - Whether any titles need ldn:u's Private variants (ScanPrivate /
   CreateNetworkPrivate) or other non-default LocalCommunicationId
-  handling — noted as a possibility for at least one title (ARMS) but
+  handling — noted as a possibility for at least one title but
   unverified.
 - How aggressively a host should reap dead/unresponsive nodes when a
   peer disappears without leaving the room — no timeout policy has been
   decided yet.
-- Which exact Pia version each 6.x-era title uses (affects only which
-  browse port — 30000 vs 35000 — a test tool needs to speak, not the
-  tunnel itself).
 - Whether any LAN title binds a specific non-LAN IP for unicast receive
   (which would bypass the proxy entirely) — none observed among titles
   researched so far, but not exhaustively ruled out.
