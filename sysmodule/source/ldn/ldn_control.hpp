@@ -212,7 +212,7 @@ namespace ams::slp::ldn {
         void HandleScan(u32 src_ip);
         void HandleScanResp(u32 src_ip, const u8 *body, size_t len);
         void HandleConnect(u32 src_ip, const u8 *body, size_t len);
-        void HandleSyncNetwork(u32 src_ip, const u8 *body, size_t len);
+        void HandleSyncNetwork(u32 src_ip, const u8 *body, size_t len, u16 relay_seq);
         void HandleRelayHeartbeat(u32 src_ip, const u8 *body, size_t len);
         void HandleRelayBye(u32 src_ip, const u8 *body, size_t len);
 
@@ -264,6 +264,16 @@ namespace ams::slp::ldn {
         MacAddress      m_join_target_bssid;
         s64             m_host_last_seen;   /* raw tick, station side: last SyncNetwork from the host */
         s64             m_last_beacon;      /* raw tick, Tick()'s own cadence gate */
+
+        /* Per-socket send counter, stamped into every outgoing frame's
+         * header (ported from dogty's LanSocket::txSeq/prepareHeader). The
+         * relay path is unordered UDP, so a delayed/duplicate SyncNetwork
+         * can arrive after a newer one and regress the node list backward
+         * in time -- HandleSyncNetwork uses the matching rx side
+         * (m_relay_sync_seq/_valid) to drop anything that isn't newer. */
+        u16             m_tx_seq;
+        u16             m_relay_sync_seq;
+        bool            m_relay_sync_seq_valid;
 
         /* Host side: recent-scanner allowlist. A shared internet relay puts
          * consoles from totally unrelated game sessions on the same wire, and

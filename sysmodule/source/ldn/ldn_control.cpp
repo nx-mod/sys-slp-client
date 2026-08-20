@@ -63,7 +63,12 @@ namespace ams::slp::ldn {
             u8  compressed;
             u16 length;             /* on-wire body length */
             u16 decompress_length;  /* original body length when compressed */
-            u8  _reserved[2];
+            /* Per-socket send counter (ported from dogty's LanSocket::seq).
+             * 0 = sender doesn't stamp (unrecognized by older/other builds,
+             * which just ignore it -- same safety property as the
+             * LanPacket_Relay* types). Used to drop a stale/duplicate
+             * SyncNetwork on the unordered relay path. */
+            u16 seq;
         };
         static_assert(sizeof(LanPacketHeader) == 12, "LanPacketHeader must be 12 bytes");
 
@@ -179,7 +184,8 @@ namespace ams::slp::ldn {
           m_ipv4_address(0x0A0D2502), m_subnet_mask(0xFFFF0000),
           m_advertise_size(0), m_station_accept_policy(0),
           m_scan_filter_lcid(0), m_scan_result_count(0),
-          m_join_active(false), m_host_last_seen(0), m_last_beacon(0)
+          m_join_active(false), m_host_last_seen(0), m_last_beacon(0),
+          m_tx_seq(0), m_relay_sync_seq(0), m_relay_sync_seq_valid(false)
     {
         std::memset(&m_network_info, 0, sizeof(m_network_info));
         std::memset(&m_network_config, 0, sizeof(m_network_config));
@@ -238,6 +244,7 @@ namespace ams::slp::ldn {
         m_scan_result_count = 0;
         m_scan_filter_lcid  = 0;
         m_join_active       = false;
+        m_relay_sync_seq_valid = false;
         ResetStations();
         SetState(CommState::None);
         R_SUCCEED();
@@ -456,6 +463,11 @@ namespace ams::slp::ldn {
         std::memset(hdr, 0, sizeof(*hdr));
         hdr->magic = LanMagic;
         hdr->type  = static_cast<u8>(type);
+        /* 0 is reserved for "sender doesn't stamp", so skip it on wrap. */
+        if (++m_tx_seq == 0) {
+            ++m_tx_seq;
+        }
+        hdr->seq = m_tx_seq;
 
         size_t total = sizeof(LanPacketHeader);
         if (body != nullptr && body_len > 0) {
@@ -536,7 +548,7 @@ namespace ams::slp::ldn {
                 HandleConnect(src_ip, body, body_len);
                 break;
             case LanPacket_SyncNetwork:
-                HandleSyncNetwork(src_ip, body, body_len);
+                HandleSyncNetwork(src_ip, body, body_len, hdr.seq);
                 break;
             case LanPacket_RelayHeartbeat:
                 HandleRelayHeartbeat(src_ip, body, body_len);
@@ -697,12 +709,31 @@ namespace ams::slp::ldn {
         UpdateNodes();
     }
 
-    void LdnControl::HandleSyncNetwork(u32 src_ip, const u8 *body, size_t len) {
+    void LdnControl::HandleSyncNetwork(u32 src_ip, const u8 *body, size_t len, u16 relay_seq) {
         AMS_UNUSED(src_ip);
         if (len != sizeof(NetworkInfo))
             return;
         if (m_state != CommState::Station && m_state != CommState::StationConnected)
             return;
+
+        /* Relay path is unordered UDP: drop a duplicate or a sync older than
+         * what we already applied, so a delayed frame can't regress the node
+         * list backward (ported from dogty's onSyncNetwork). "Older" = within
+         * a window behind the latest seq we've applied; a far jump backwards
+         * is the host's socket restarting its counter (e.g. game relaunch),
+         * accept that instead of treating it as stale forever. relay_seq==0
+         * means the sender isn't stamping (older/other build) -- skip the
+         * check entirely rather than reject everything from it. */
+        if (relay_seq != 0) {
+            if (m_relay_sync_seq_valid &&
+                (u16)(m_relay_sync_seq - relay_seq) < 256) {
+                ::slp::dbg::Trace("ldn: SyncNetwork DROP -- stale relay seq %u (have %u)",
+                                  relay_seq, m_relay_sync_seq);
+                return;
+            }
+            m_relay_sync_seq       = relay_seq;
+            m_relay_sync_seq_valid = true;
+        }
 
         /* Session-scoping gate: while we're actively targeting a specific
          * network (m_join_active, set by Connect()), reject a SyncNetwork
@@ -788,6 +819,7 @@ namespace ams::slp::ldn {
                 ::slp::dbg::Trace("ldn: host Bye (0x%08x), ending session", bye->ipv4);
                 m_disconnect_reason = 3;   /* LdnDisconnectReason_DestroyedByUser */
                 m_join_active = false;
+                m_relay_sync_seq_valid = false;
                 SetState(CommState::Station);
             }
         } else if (m_state == CommState::AccessPointCreated) {
@@ -1072,6 +1104,7 @@ namespace ams::slp::ldn {
                                   (long long)(RelayPeerTimeoutTicks / 19200000));
                 m_disconnect_reason = 6;   /* LdnDisconnectReason_SignalLost */
                 m_join_active = false;
+                m_relay_sync_seq_valid = false;
                 SetState(CommState::Station);
             }
         }
@@ -1322,6 +1355,7 @@ namespace ams::slp::ldn {
         {
             std::scoped_lock lk(m_mutex);
             m_join_active = false;
+            m_relay_sync_seq_valid = false;
         }
         ::slp::dbg::Trace("ldn: Connect timed out, no SyncNetwork from host -- reporting failure");
         return MakeError(LdnModuleId, 64);
@@ -1339,6 +1373,7 @@ namespace ams::slp::ldn {
                       reinterpret_cast<const u8 *>(&bye), sizeof(bye));
         }
         m_join_active = false;
+        m_relay_sync_seq_valid = false;
         ResetStations();
         SetState(CommState::Station);
         R_SUCCEED();

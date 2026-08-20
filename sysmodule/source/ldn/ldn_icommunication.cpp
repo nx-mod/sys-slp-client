@@ -4,12 +4,53 @@
 #include "slpcfg/slp_trace.hpp"
 
 #include <cstdint>
+#include <cstdio>
 
 extern "C" {
 #include <switch/services/nifm.h>
 }
 
 namespace ams::slp::ldn {
+
+    namespace {
+        void TraceNetworkInfo(const char *tag, const NetworkInfo &info) {
+            char macbuf[18];
+            const auto &m = info.common.bssid.raw;
+            std::snprintf(macbuf, sizeof(macbuf), "%02x:%02x:%02x:%02x:%02x:%02x",
+                          m[0], m[1], m[2], m[3], m[4], m[5]);
+            ::slp::dbg::Trace(
+                "ldn: %s lcid=0x%016llx sceneId=0x%04x ssid='%.32s' bssid=%s "
+                "sessionId=%016llx%016llx nodeCount=%u/%u channel=%d linkLevel=%d "
+                "securityMode=0x%04x", tag,
+                (unsigned long long)info.networkId.intentId.localCommunicationId,
+                info.networkId.intentId.sceneId,
+                info.common.ssid.raw, macbuf,
+                (unsigned long long)info.networkId.sessionId.high,
+                (unsigned long long)info.networkId.sessionId.low,
+                info.ldn.nodeCount, info.ldn.nodeCountMax,
+                (int)info.common.channel, (int)info.common.linkLevel,
+                info.ldn.securityMode);
+            for (int i = 0; i < info.ldn.nodeCount && i < NodeCountMax; i++) {
+                const auto &n = info.ldn.nodes[i];
+                ::slp::dbg::Trace(
+                    "ldn: %s   node[%d] ip=%u.%u.%u.%u connected=%d user='%.33s'",
+                    tag, i,
+                    (n.ipv4Address >> 24) & 0xFF, (n.ipv4Address >> 16) & 0xFF,
+                    (n.ipv4Address >> 8) & 0xFF, (n.ipv4Address >> 0) & 0xFF,
+                    (int)n.isConnected, n.userName);
+            }
+            if (info.ldn.advertiseDataSize > 0) {
+                size_t len = info.ldn.advertiseDataSize;
+                if (len > AdvertiseDataSizeMax) len = AdvertiseDataSizeMax;
+                char hex[AdvertiseDataSizeMax * 3 + 1] = {};
+                for (size_t i = 0; i < len; i++) {
+                    std::snprintf(hex + i * 3, 4, "%02x ", info.ldn.advertiseData[i]);
+                }
+                ::slp::dbg::Trace("ldn: %s   advertiseData[%u]: %s", tag,
+                                  info.ldn.advertiseDataSize, hex);
+            }
+        }
+    }
 
     LdnICommunicationService::~LdnICommunicationService() {
         /* See the declaration's comment: force the shared LdnControl
@@ -56,6 +97,24 @@ namespace ams::slp::ldn {
 
     Result LdnICommunicationService::CreateNetwork(CreateNetworkConfig data) {
         ::slp::dbg::Trace("ldn: CreateNetwork");
+        ::slp::dbg::Trace(
+            "ldn: CreateNetwork raw: lcid=0x%016llx sceneId=0x%04x channel=%u "
+            "nodeCountMax=%u lcVersion=0x%04x securityMode=0x%04x user='%s'",
+            (unsigned long long)data.networkConfig.intentId.localCommunicationId,
+            data.networkConfig.intentId.sceneId,
+            data.networkConfig.channel,
+            data.networkConfig.nodeCountMax,
+            data.networkConfig.localCommunicationVersion,
+            data.securityConfig.securityMode,
+            data.userConfig.userName);
+        {
+            const uint8_t *raw = reinterpret_cast<const uint8_t *>(&data);
+            char hex[152 * 3 + 1] = {};
+            for (size_t i = 0; i < sizeof(data) && i < 152; i++) {
+                std::snprintf(hex + i * 3, 4, "%02x ", raw[i]);
+            }
+            ::slp::dbg::Trace("ldn: CreateNetwork raw bytes: %s", hex);
+        }
         return LdnControl::GetInstance().CreateNetwork(data);
     }
 
@@ -84,6 +143,7 @@ namespace ams::slp::ldn {
     Result LdnICommunicationService::Connect(ConnectNetworkData dat,
                                              const NetworkInfo &data) {
         ::slp::dbg::Trace("ldn: Connect");
+        TraceNetworkInfo("Connect target", data);
         return LdnControl::GetInstance().Connect(dat, data);
     }
 
@@ -158,6 +218,8 @@ namespace ams::slp::ldn {
                                           ams::sf::OutAutoSelectArray<NetworkInfo> buffer,
                                           u16 channel, ScanFilter filter) {
         AMS_UNUSED(channel);
+        ::slp::dbg::Trace("ldn: Scan filter lcid=0x%016llx",
+            (unsigned long long)filter.networkId.intentId.localCommunicationId);
         size_t cap = buffer.GetSize();
         if (cap > UINT16_MAX)
             cap = UINT16_MAX;
@@ -165,6 +227,9 @@ namespace ams::slp::ldn {
         Result rc = LdnControl::GetInstance().Scan(filter, buffer.GetPointer(),
                                                    (u16)cap, &n);
         count.SetValue(n);
+        for (u32 i = 0; i < n; i++) {
+            TraceNetworkInfo("Scan result", buffer.GetPointer()[i]);
+        }
         return rc;
     }
 

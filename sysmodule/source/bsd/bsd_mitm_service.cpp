@@ -1578,20 +1578,35 @@ Result BsdMitmService::Connect(
         }
     }
 
-    // Not LDN address - forward to real service
-    s32 errno_out = 0;
-    Result rc = serviceMitmDispatchInOut(
-        m_forward_service.get(), 14, fd, errno_out,
-        .buffer_attrs = {
-            SfBufferAttr_In | SfBufferAttr_HipcAutoSelect,
-        },
-        .buffers = {
-            { addr.GetPointer(), addr.GetSize() },
-        }
-    );
-
-    out_errno.SetValue(errno_out);
-    R_RETURN(rc);
+    /* Fast-fail EVERY non-LDN connect while the relay is running -- make the
+     * console look like it genuinely has no internet route, the way a real
+     * local-wireless-only setup would, instead of forwarding to the real
+     * network and letting a game's online-service check chase a real (or
+     * hosts-file-blocked) destination.
+     *
+     * This started narrower: only refuse a destination that resolved to
+     * 0.0.0.0, the standard CFW hosts-file convention for blocking a
+     * hostname (e.g. Nintendo's own online-service backends, commonly
+     * blocked to avoid telemetry/bans). That missed real-world cases where
+     * the block resolves to something other than 0.0.0.0, or where the
+     * destination is simply a slow/unreachable real server rather than a
+     * hosts-file sentinel -- either way the real bsd:u service would try to
+     * actually connect() and wait out a real OS-level TCP timeout (tens of
+     * seconds) before the game found out it couldn't reach it. Observed on
+     * hardware: a game's "connecting to online services" step cost 10-16s+
+     * before it gave up, and kept silently retrying in the background even
+     * after falling back to a local/offline lobby.
+     *
+     * Refusing every non-LDN destination immediately with ENETUNREACH
+     * (matching what a console with no real internet route reports, not
+     * ECONNREFUSED which implies a route that IS there but nobody's
+     * listening) makes this instant and deterministic every time, and lets
+     * a game that falls back to local/LAN play on failure reach that
+     * fallback immediately instead of stalling on a doomed connect. */
+    LOG_INFO("BSD Connect fd=%d non-LDN destination -- refusing immediately "
+             "(ENETUNREACH) instead of forwarding to the real network", fd);
+    out_errno.SetValue(static_cast<s32>(ryu_ldn::bsd::BsdErrno::NetUnreach));
+    R_SUCCEED();
 }
 
 /**

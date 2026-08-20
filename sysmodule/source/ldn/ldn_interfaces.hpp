@@ -131,6 +131,9 @@ namespace ams::slp::ldn {
         uint8_t _unk[4];
         NetworkConfig networkConfig;
     };
+    static_assert(sizeof(CreateNetworkConfig) == 152,
+                  "must match the real nn::ldn ABI -- confirmed against both "
+                  "dogty's ldn_mitm fork and ryu_ldn_nx");
 
     struct ConnectNetworkData {
         SecurityConfig securityConfig;

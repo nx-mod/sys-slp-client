@@ -382,9 +382,16 @@ enum class ShutdownHow : int32_t {
 // =============================================================================
 
 /**
- * @brief BSD errno values (Linux-compatible on Switch)
+ * @brief BSD errno values
  *
- * Note: Nintendo uses Linux errno values, not FreeBSD.
+ * These MUST match devkitA64's newlib <sys/errno.h> exactly -- that's the
+ * libc the game's own bsd:u wrapper links against, so whatever numeric value
+ * we place in out_errno is interpreted using newlib's numbering, not
+ * Linux's. (newlib's socket-range errno values are BSD-derived and do NOT
+ * line up with Linux glibc despite looking similar at a glance -- e.g. real
+ * ENETUNREACH is 114 here, not glibc's 101. Several of the old glibc-numbered
+ * values in this enum collided with a DIFFERENT real newlib error, e.g. the
+ * old Already=114 was actually real ENETUNREACH.)
  */
 enum class BsdErrno : int32_t {
     Success = 0,
@@ -400,26 +407,26 @@ enum class BsdErrno : int32_t {
     Inval = 22,          ///< EINVAL
     NFile = 23,          ///< ENFILE
     MFile = 24,          ///< EMFILE
-    NotSock = 88,        ///< ENOTSOCK
-    DestAddrReq = 89,    ///< EDESTADDRREQ
-    MsgSize = 90,        ///< EMSGSIZE
-    ProtoType = 91,      ///< EPROTOTYPE
-    NoProtoOpt = 92,     ///< ENOPROTOOPT
-    ProtoNoSupport = 93, ///< EPROTONOSUPPORT
+    NotSock = 108,       ///< ENOTSOCK
+    DestAddrReq = 121,   ///< EDESTADDRREQ
+    MsgSize = 122,       ///< EMSGSIZE
+    ProtoType = 107,     ///< EPROTOTYPE
+    NoProtoOpt = 109,    ///< ENOPROTOOPT
+    ProtoNoSupport = 123,///< EPROTONOSUPPORT
     OpNotSupp = 95,      ///< EOPNOTSUPP
-    AfNoSupport = 97,    ///< EAFNOSUPPORT
-    AddrInUse = 98,      ///< EADDRINUSE
-    AddrNotAvail = 99,   ///< EADDRNOTAVAIL
-    NetDown = 100,       ///< ENETDOWN
-    NetUnreach = 101,    ///< ENETUNREACH
+    AfNoSupport = 106,   ///< EAFNOSUPPORT
+    AddrInUse = 112,     ///< EADDRINUSE
+    AddrNotAvail = 125,  ///< EADDRNOTAVAIL
+    NetDown = 115,       ///< ENETDOWN
+    NetUnreach = 114,    ///< ENETUNREACH
     ConnReset = 104,     ///< ECONNRESET
     NoBufs = 105,        ///< ENOBUFS
-    IsConn = 106,        ///< EISCONN
-    NotConn = 107,       ///< ENOTCONN
-    TimedOut = 110,      ///< ETIMEDOUT
+    IsConn = 127,        ///< EISCONN
+    NotConn = 128,       ///< ENOTCONN
+    TimedOut = 116,      ///< ETIMEDOUT
     ConnRefused = 111,   ///< ECONNREFUSED
-    InProgress = 115,    ///< EINPROGRESS
-    Already = 114,       ///< EALREADY
+    InProgress = 119,    ///< EINPROGRESS
+    Already = 120,       ///< EALREADY
 };
 
 // =============================================================================
